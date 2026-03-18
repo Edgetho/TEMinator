@@ -39,6 +39,7 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
     ):
         super().__init__()
 
+        self.fft_name = fft_name
         self._update_title(fft_name, parent_name)
         self.resize(*DEFAULT_FFT_WINDOW_SIZE)
 

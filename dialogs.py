@@ -110,36 +110,74 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
 
 
 class MetadataWindow(QtWidgets.QMainWindow):
-    """Window displaying full image metadata extracted by HyperSpy."""
+    """Window displaying both raw and cleaned HyperSpy metadata.
+
+    The left tab shows the "raw" metadata (typically the original
+    ``Signal.original_metadata`` / reader dictionary), while the right
+    tab shows HyperSpy's cleaned ``Signal.metadata.as_dictionary()``
+    view. Callers may provide either or both; missing inputs are shown
+    as a short explanatory message.
+    """
 
     def __init__(
         self,
         parent=None,
         title: str = "Image Metadata",
-        metadata: Optional[dict] = None,
+        raw_metadata: Optional[dict] = None,
+        cleaned_metadata: Optional[dict] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(600, 500)
+        self.resize(800, 600)
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
 
-        self.text_edit = QtWidgets.QPlainTextEdit()
-        self.text_edit.setReadOnly(True)
-        layout.addWidget(self.text_edit)
+        self.tabs = QtWidgets.QTabWidget()
+        layout.addWidget(self.tabs)
 
-        if metadata is not None:
-            self.update_metadata(metadata)
+        self.raw_edit = QtWidgets.QPlainTextEdit()
+        self.raw_edit.setReadOnly(True)
+        self.cleaned_edit = QtWidgets.QPlainTextEdit()
+        self.cleaned_edit.setReadOnly(True)
 
-    def update_metadata(self, metadata: dict):
-        """Update displayed metadata."""
+        self.tabs.addTab(self.raw_edit, "Raw original metadata")
+        self.tabs.addTab(self.cleaned_edit, "HyperSpy metadata")
+
+        # Populate initial content if provided
+        self.update_metadata(raw_metadata, cleaned_metadata)
+
+    def _format_metadata(self, metadata: Optional[dict], fallback_message: str) -> str:
+        if metadata is None:
+            return fallback_message
         try:
-            text = json.dumps(metadata, indent=2, default=str)
+            return json.dumps(metadata, indent=2, default=str)
         except TypeError:
-            text = str(metadata)
-        self.text_edit.setPlainText(text)
+            return str(metadata)
+
+    def update_metadata(
+        self,
+        raw_metadata: Optional[dict] = None,
+        cleaned_metadata: Optional[dict] = None,
+    ) -> None:
+        """Update displayed metadata for both tabs.
+
+        Either argument may be ``None``; in that case a short message is
+        shown instead of JSON content.
+        """
+
+        raw_text = self._format_metadata(
+            raw_metadata,
+            "No original/raw metadata is available for this image.",
+        )
+        cleaned_text = self._format_metadata(
+            cleaned_metadata,
+            "No cleaned HyperSpy metadata dictionary is available for this image.",
+        )
+
+        self.raw_edit.setPlainText(raw_text)
+        self.cleaned_edit.setPlainText(cleaned_text)
 
 
 class ToneCurveDialog(QtWidgets.QDialog):

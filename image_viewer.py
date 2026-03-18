@@ -53,6 +53,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.measurement_items: List[Tuple[pg.PlotDataItem, pg.TextItem]] = []
         self.selected_measurement_index: Optional[int] = None
 
+        # Vim-style command line (":" commands)
+        self.command_edit: Optional[QtWidgets.QLineEdit] = None
+
         self.display_min: Optional[float] = None
         self.display_max: Optional[float] = None
         self.display_gamma: float = 1.0
@@ -62,6 +65,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self._setup_from_signal(signal, window_suffix)
         else:
             self._load_and_setup()
+
+        # Install a global key event filter so we can capture ':'
+        # even when the plot widget has focus.
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
     # Drag and drop -----------------------------------------------------
 
@@ -110,7 +119,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 "using default pixel scaling instead.",
             )
 
-        self.is_reciprocal_space = utils.is_diffraction_pattern(self.data)
+        # Decide whether this view should be treated as reciprocal space.
+        # Prefer explicit metadata / axis units when available so that
+        # multiple images from the same file are classified consistently,
+        # falling back to an image‑content heuristic only as a last resort.
+        self.is_reciprocal_space = self._detect_reciprocal_space(signal)
 
         self._init_display_window()
 
@@ -188,6 +201,58 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         return True
 
+    def _detect_reciprocal_space(self, signal) -> bool:
+        """Determine if the signal should be treated as reciprocal space.
+
+        The logic prefers explicit metadata and axis units so that images
+        originating from the same file (e.g. multi-image EMI/DM stacks)
+        receive consistent classification and therefore consistent
+        scale-bar behaviour.
+        """
+
+        # 1) Prefer explicit HyperSpy metadata when available
+        try:
+            meta = getattr(signal, "metadata", None)
+            sig_meta = getattr(meta, "Signal", None)
+            sig_type = getattr(sig_meta, "signal_type", None)
+            if isinstance(sig_type, str):
+                st = sig_type.strip().lower()
+                if st in {"diffraction", "electron_diffraction", "fft"}:
+                    return True
+                if st in {"image", "tem", "stem"}:
+                    return False
+        except Exception:
+            pass
+
+        # 2) Inspect axis unit strings for common reciprocal-space patterns
+        units_parts: list[str] = []
+        try:
+            ax0 = signal.axes_manager[0]
+            ax1 = signal.axes_manager[1]
+            units_parts.append(str(getattr(ax0, "units", "") or ""))
+            units_parts.append(str(getattr(ax1, "units", "") or ""))
+        except Exception:
+            pass
+
+        units_str = " ".join(units_parts).lower()
+        reciprocal_markers = [
+            "1/",
+            "/m",
+            "1/m",
+            "1/nm",
+            "/nm",
+            "^-1",
+            "-1",
+        ]
+        if any(marker in units_str for marker in reciprocal_markers):
+            return True
+
+        # 3) Default: treat as real-space image. We no longer rely on
+        # intensity-based heuristics for diffraction detection because
+        # they can classify visually similar images from the same file
+        # differently, leading to inconsistent scale-bar behaviour.
+        return False
+
     @property
     def image_bounds(self) -> Tuple[float, float, float, float]:
         x_offset = self.ax_x.offset if self.ax_x else 0
@@ -227,6 +292,20 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.glw.ci.layout.setContentsMargins(0, 0, 0, 0)
             self.glw.ci.layout.setSpacing(0)
         main_layout.addWidget(self.glw)
+
+        # Hidden command line at the bottom, shown when ':' is pressed
+        self.command_edit = QtWidgets.QLineEdit()
+        self.command_edit.setPlaceholderText(
+            "Vim command (:F, :d, :e <file>, :E, :a)"
+        )
+        self.command_edit.returnPressed.connect(self._execute_command_from_line)
+        self.command_edit.hide()
+        main_layout.addWidget(self.command_edit)
+
+        # Shortcut for ':' so command mode is easy to enter while this
+        # image window is active.
+        colon_shortcut = QtGui.QShortcut(QtGui.QKeySequence(":"), self)
+        colon_shortcut.activated.connect(self._enter_command_mode)
 
         self.p1 = self.glw.addPlot()
         self.p1.hideAxis("bottom")
@@ -288,6 +367,174 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         escape_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self)
         escape_shortcut.activated.connect(self._exit_measure_mode)
+
+    # Vim-style command handling -------------------------------------
+
+    def eventFilter(self, obj, event):  # type: ignore[override]
+        """Capture ':' globally when this window is active."""
+        if (
+            self.isActiveWindow()
+            and event.type() == QtCore.QEvent.KeyPress
+        ):
+            key_event = event  # QKeyEvent
+            # Enter command mode on ':' with no modifiers
+            if getattr(key_event, "text", lambda: "")() == ":" and not key_event.modifiers():
+                self._enter_command_mode()
+                return True
+
+            # Allow Esc to cancel command mode
+            if (
+                self.command_edit is not None
+                and self.command_edit.isVisible()
+                and getattr(key_event, "key", lambda: None)() == QtCore.Qt.Key_Escape
+            ):
+                self._exit_command_mode()
+                return True
+
+        return super().eventFilter(obj, event)
+
+    def _enter_command_mode(self) -> None:
+        if self.command_edit is None:
+            return
+        self.command_edit.show()
+        self.command_edit.clear()
+        self.command_edit.setText(":")
+        self.command_edit.setFocus()
+        self.command_edit.setCursorPosition(len(self.command_edit.text()))
+
+    def _exit_command_mode(self) -> None:
+        if self.command_edit is None:
+            return
+        self.command_edit.clear()
+        self.command_edit.hide()
+        # Return focus to the graphics view so normal keys work again
+        if hasattr(self.glw, "setFocus"):
+            self.glw.setFocus()
+
+    def _execute_command_from_line(self) -> None:
+        if self.command_edit is None:
+            return
+
+        text = self.command_edit.text().strip()
+        if text.startswith(":"):
+            text = text[1:]
+        text = text.strip()
+        if not text:
+            self._exit_command_mode()
+            return
+
+        parts = text.split(maxsplit=1)
+        cmd = parts[0]
+        arg = parts[1] if len(parts) > 1 else ""
+
+        handled = self._run_vim_command(cmd, arg)
+        if not handled:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Command",
+                f"Unknown command: {cmd}",
+            )
+
+        self._exit_command_mode()
+
+    def _run_vim_command(self, cmd: str, arg: str) -> bool:
+        """Dispatch vim-like commands for this image window.
+
+        Supported commands:
+          :F              – add a new FFT ROI using current view
+          :d              – start distance measurement mode
+          :e <filename>   – open a file in this directory
+          :E              – fuzzy-open a file in this image's directory
+          :a              – open the adjustment window
+        """
+
+        cmd_str = cmd.strip()
+        if not cmd_str:
+            return False
+
+        upper_cmd = cmd_str.upper()
+        lower_cmd = cmd_str.lower()
+
+        # :F – add new FFT ROI
+        if upper_cmd == "F":
+            self._add_new_fft()
+            return True
+
+        # :d – enable distance measurement mode
+        if upper_cmd == "D":
+            if self.btn_measure is not None:
+                if not self.btn_measure.isChecked():
+                    self.btn_measure.setChecked(True)
+                    self._toggle_line_measurement()
+            return True
+
+        # :a – open adjustment window
+        if upper_cmd == "A":
+            self._open_adjust_dialog()
+            return True
+
+        # :E – directory fuzzy finder for current image directory
+        if upper_cmd == "E" and not arg:
+            self._open_directory_fuzzy_view()
+            return True
+
+        # :e <filename> – open file (relative to current image directory by default)
+        if lower_cmd == "e":
+            if not arg:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Command",
+                    "Usage: :e <filename>",
+                )
+                return True
+            self._open_file_by_name(arg)
+            return True
+
+        return False
+
+    def _open_file_by_name(self, filename: str) -> None:
+        from pathlib import Path as _Path
+
+        name = filename.strip().strip("\"").strip("'")
+        if not name:
+            return
+
+        path = _Path(name)
+        if not path.is_absolute():
+            try:
+                base = _Path(self.file_path).parent
+            except Exception:
+                base = _Path.cwd()
+            path = base / name
+
+        if not path.is_file():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Open File",
+                f"File not found: {path}",
+            )
+            return
+
+        open_image_file(str(path))
+
+    def _open_directory_fuzzy_view(self) -> None:
+        from pathlib import Path as _Path
+
+        try:
+            directory = _Path(self.file_path).parent
+        except Exception:
+            directory = _Path.cwd()
+
+        if not directory.is_dir():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Directory",
+                f"Directory not found: {directory}",
+            )
+            return
+
+        dialog = DirectoryFuzzyOpenDialog(self, directory)
+        dialog.exec_()
 
     def _open_adjust_dialog(self):
         if self.data is None:
@@ -407,8 +654,211 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         btn_adjust.clicked.connect(self._open_adjust_dialog)
         layout.addWidget(btn_adjust)
 
+        btn_save_views = QtWidgets.QPushButton("Save View && FFTs")
+        btn_save_views.clicked.connect(self._save_view_and_ffts)
+        layout.addWidget(btn_save_views)
+
         layout.addStretch()
         return layout
+
+    def _save_view_and_ffts(self) -> None:
+        """Save the current view (with annotations) and any FFT windows.
+
+        The main image view is saved in a user-selected format (PNG, TIFF,
+        or JPEG). All FFT views are saved as PNG files.
+        """
+
+        if self.data is None or self.glw is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Save Images",
+                "No image is currently loaded to save.",
+            )
+            return
+
+        # Choose output directory
+        try:
+            default_dir = str(Path(self.file_path).parent)
+        except Exception:
+            default_dir = str(Path.cwd())
+
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Directory",
+            default_dir,
+        )
+        if not directory:
+            return
+
+        directory_path = Path(directory)
+
+        # Choose base name
+        suggested_base = Path(self.file_path).stem or "image"
+        base_name, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Base File Name",
+            "Base name for saved images:",
+            text=suggested_base,
+        )
+        if not ok:
+            return
+        base_name = base_name.strip()
+        if not base_name:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Save Images",
+                "Base name cannot be empty.",
+            )
+            return
+
+        # Choose format for main view
+        format_labels = ["PNG (.png)", "TIFF (.tif)", "JPEG (.jpg)"]
+        format_map = {
+            0: ("PNG", ".png"),
+            1: ("TIFF", ".tif"),
+            2: ("JPEG", ".jpg"),
+        }
+
+        fmt_label, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            "Image Format",
+            "Format for main view:",
+            format_labels,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        try:
+            fmt_index = format_labels.index(fmt_label)
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Save Images",
+                "Unknown image format selected.",
+            )
+            return
+
+        fmt_name, ext = format_map.get(fmt_index, ("PNG", ".png"))
+
+        # Compose extra label for export using metadata (file, instrument,
+        # acquisition mode, and AcquireDate from original metadata).
+        overlay_label = self._build_export_overlay_label()
+
+        # Temporarily overlay metadata label above the scale bar during export
+        extra_label_applied = False
+        if self.scale_bar is not None and hasattr(self.scale_bar, "set_extra_label"):
+            try:
+                self.scale_bar.set_extra_label(overlay_label)
+                extra_label_applied = True
+            except Exception:
+                extra_label_applied = False
+
+        # Capture main view (graphics widget) including annotations and label
+        try:
+            pixmap = self.glw.grab()
+        except Exception as e:
+            # Clean up overlay on failure
+            if extra_label_applied:
+                try:
+                    self.scale_bar.set_extra_label(None)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Save Images",
+                f"Failed to capture main view: {e}",
+            )
+            return
+
+        main_path = directory_path / f"{base_name}_view{ext}"
+        if not pixmap.save(str(main_path), fmt_name):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Save Images",
+                f"Failed to save main view to {main_path}.",
+            )
+
+        # Remove temporary overlay label after saving
+        if extra_label_applied:
+            try:
+                self.scale_bar.set_extra_label(None)  # type: ignore[union-attr]
+            except Exception:
+                pass
+
+        # Capture all open FFT windows as PNGs, with metadata + ROI label
+        fft_saved = 0
+        for idx, fft_window in enumerate(self.fft_windows, start=1):
+            # Build label: metadata summary and ROI number (from fft_name)
+            parent_window = getattr(fft_window, "parent_image_window", None)
+            base_label = None
+            if parent_window is self:
+                base_label = overlay_label
+            elif parent_window is not None and hasattr(parent_window, "_build_export_overlay_label"):
+                try:
+                    base_label = parent_window._build_export_overlay_label()
+                except Exception:
+                    base_label = None
+
+            if not base_label:
+                # Fallback to file name if we cannot get metadata
+                try:
+                    parent_file = getattr(parent_window, "file_path", None)
+                    base_label = Path(parent_file).name if parent_file else "image"
+                except Exception:
+                    base_label = "image"
+
+            roi_label = getattr(fft_window, "fft_name", f"FFT {idx}")
+            extra_label = f"{base_label} | {roi_label}"
+
+            extra_label_applied_fft = False
+            scale_bar = getattr(fft_window, "scale_bar", None)
+            if scale_bar is not None and hasattr(scale_bar, "set_extra_label"):
+                try:
+                    scale_bar.set_extra_label(extra_label)
+                    extra_label_applied_fft = True
+                except Exception:
+                    extra_label_applied_fft = False
+
+            # Grab only the FFT view (graphics widget) so that
+            # window chrome and buttons are not included, mirroring
+            # how the main image view is exported.
+            try:
+                fft_view_widget = getattr(fft_window, "glw", fft_window)
+                fft_pixmap = fft_view_widget.grab()
+            except Exception:
+                if extra_label_applied_fft:
+                    try:
+                        scale_bar.set_extra_label(None)  # type: ignore[union-attr]
+                    except Exception:
+                        pass
+                continue
+
+            fft_path = directory_path / f"{base_name}_fft{idx}.png"
+            if fft_pixmap.save(str(fft_path), "PNG"):
+                fft_saved += 1
+
+            # Remove temporary overlay label after saving
+            if extra_label_applied_fft:
+                try:
+                    scale_bar.set_extra_label(None)  # type: ignore[union-attr]
+                except Exception:
+                    pass
+
+        message_lines = [f"Saved main view to:\n{main_path}"]
+        if fft_saved:
+            message_lines.append(f"Saved {fft_saved} FFT view PNG file(s).")
+        else:
+            message_lines.append(
+                "No FFT windows were open; only the main view was saved."
+            )
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Save Images",
+            "\n".join(message_lines),
+        )
 
     def _add_new_fft(self, x_offset=None, y_offset=None, w=None, h=None):
         if x_offset is None or y_offset is None or w is None or h is None:
@@ -667,6 +1117,85 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.measurement_history_window.add_measurement(measurement_text)
 
+    # ------------------------------------------------------------------
+    # Metadata helpers for export overlays
+    # ------------------------------------------------------------------
+
+    def _build_export_overlay_label(self) -> str:
+        """Return a one-line label for export overlays.
+
+        Uses *original* metadata to add:
+        - Microscope: second word of ``ObjectInfo.ExperimentalDescription["Microscope"]``
+        - Mode: first word of ``ObjectInfo.ExperimentalDescription["Mode"]``
+        - AcquireDate: full string from ``ObjectInfo["AcquireDate"]``
+
+        Final format:
+            ``<filename> | <Microscope-second-word> | <Mode-first-word> | <AcquireDate>``
+        """
+
+        # File name
+        try:
+            file_name = Path(self.file_path).name if self.file_path else "image"
+        except Exception:
+            file_name = "image"
+
+        microscope_tag = ""
+        mode_tag = ""
+        acq_date = ""
+
+        raw_meta = self._get_original_metadata_dict()
+        if isinstance(raw_meta, dict):
+            obj_info = (
+                raw_meta.get("ObjectInfo")
+                or raw_meta.get("objectInfo")
+                or raw_meta.get("object_info")
+            )
+
+            if isinstance(obj_info, dict):
+                # AcquireDate: full string
+                acq_val = (
+                    obj_info.get("AcquireDate")
+                    or obj_info.get("acquiredate")
+                    or obj_info.get("Acquiredate")
+                )
+                if acq_val:
+                    acq_date = str(acq_val)
+
+                # ExperimentalDescription contains Microscope + Mode
+                exp_desc = (
+                    obj_info.get("ExperimentalDescription")
+                    or obj_info.get("experimentaldescription")
+                    or obj_info.get("experimental_description")
+                )
+
+                if isinstance(exp_desc, dict):
+                    # Microscope: take second word
+                    microscope_val = (
+                        exp_desc.get("Microscope")
+                        or exp_desc.get("microscope")
+                    )
+                    if isinstance(microscope_val, str):
+                        words = microscope_val.split()
+                        if len(words) >= 2:
+                            microscope_tag = words[1]
+
+                    # Mode: take first word
+                    mode_val = exp_desc.get("Mode") or exp_desc.get("mode")
+                    if isinstance(mode_val, str):
+                        parts = mode_val.strip().split()
+                        if parts:
+                            mode_tag = parts[0]
+
+        parts = [file_name]
+        if microscope_tag:
+            parts.append(microscope_tag)
+        if mode_tag:
+            parts.append(mode_tag)
+        if acq_date:
+            parts.append(acq_date)
+
+        return " | ".join(str(p) for p in parts if p)
+
     def _show_metadata_window(self):
         if self.signal is None:
             QtWidgets.QMessageBox.information(
@@ -674,24 +1203,137 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             return
 
-        metadata_dict = self._get_original_metadata_dict()
-        if metadata_dict is None:
-            metadata_dict = self.signal.metadata.as_dictionary()
+        raw_metadata = self._get_original_metadata_dict()
+        cleaned_metadata = None
+        if self.signal is not None and hasattr(self.signal, "metadata"):
+            try:
+                cleaned_metadata = self.signal.metadata.as_dictionary()
+            except Exception:
+                cleaned_metadata = None
 
         file_name = Path(self.file_path).name
         title = f"Metadata - {file_name}"
 
         if self.metadata_window is None:
             self.metadata_window = MetadataWindow(
-                self, title=title, metadata=metadata_dict
+                self,
+                title=title,
+                raw_metadata=raw_metadata,
+                cleaned_metadata=cleaned_metadata,
             )
         else:
             self.metadata_window.setWindowTitle(title)
-            self.metadata_window.update_metadata(metadata_dict)
+            self.metadata_window.update_metadata(
+                raw_metadata=raw_metadata,
+                cleaned_metadata=cleaned_metadata,
+            )
 
         self.metadata_window.show()
         self.metadata_window.raise_()
         self.metadata_window.activateWindow()
+
+
+class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
+    """Simple fuzzy finder over files in a directory."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget], directory: Path):
+        super().__init__(parent)
+        self.directory = directory
+        self._all_files: List[str] = []
+
+        self.setWindowTitle(f"Open File - {directory}")
+        self.resize(500, 400)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.filter_edit = QtWidgets.QLineEdit(self)
+        self.filter_edit.setPlaceholderText("Type to fuzzy-filter; Enter to open")
+        layout.addWidget(self.filter_edit)
+
+        self.list_widget = QtWidgets.QListWidget(self)
+        layout.addWidget(self.list_widget)
+
+        self.filter_edit.textChanged.connect(self._on_filter_changed)
+        self.filter_edit.returnPressed.connect(self._on_return_pressed)
+        self.list_widget.itemActivated.connect(self._on_item_activated)
+        self.list_widget.itemDoubleClicked.connect(self._on_item_activated)
+
+        self._populate_files()
+
+        if self._all_files:
+            self.list_widget.setCurrentRow(0)
+
+        # Focus the filter line edit when shown
+        QtCore.QTimer.singleShot(0, self.filter_edit.setFocus)
+
+    def _populate_files(self) -> None:
+        # Restrict to common image/signal extensions
+        exts = {
+            ".dm3",
+            ".dm4",
+            ".tif",
+            ".tiff",
+            ".mrc",
+            ".ser",
+            ".png",
+            ".jpg",
+            ".jpeg",
+        }
+
+        try:
+            self._all_files = sorted(
+                f.name
+                for f in self.directory.iterdir()
+                if f.is_file() and (not exts or f.suffix.lower() in exts)
+            )
+        except Exception:
+            self._all_files = []
+
+        self._update_list(self._all_files)
+
+    def _update_list(self, names: List[str]) -> None:
+        self.list_widget.clear()
+        self.list_widget.addItems(names)
+
+    @staticmethod
+    def _fuzzy_match(pattern: str, text: str) -> bool:
+        """Simple subsequence-based fuzzy matching."""
+        it = iter(text)
+        return all(ch in it for ch in pattern)
+
+    def _on_filter_changed(self, text: str) -> None:
+        pattern = text.strip().lower()
+        if not pattern:
+            self._update_list(self._all_files)
+            if self._all_files:
+                self.list_widget.setCurrentRow(0)
+            return
+
+        matches = [
+            name
+            for name in self._all_files
+            if self._fuzzy_match(pattern, name.lower())
+        ]
+        self._update_list(matches)
+        if matches:
+            self.list_widget.setCurrentRow(0)
+
+    def _on_return_pressed(self) -> None:
+        current = self.list_widget.currentItem()
+        if current is None and self.list_widget.count() > 0:
+            current = self.list_widget.item(0)
+        if current is not None:
+            self._open_item(current)
+
+    def _on_item_activated(self, item: QtWidgets.QListWidgetItem) -> None:  # type: ignore[override]
+        self._open_item(item)
+
+    def _open_item(self, item: QtWidgets.QListWidgetItem) -> None:
+        name = item.text()
+        path = self.directory / name
+        if path.is_file():
+            open_image_file(str(path))
+        self.accept()
 
 
 def open_image_file(file_path: str):

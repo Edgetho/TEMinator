@@ -126,6 +126,7 @@ class DynamicScaleBar(pg.GraphicsObject):
         self._length_px = 0.0
         self._label_text = ""
         self._rect = QtCore.QRectF()
+        self._extra_label: str | None = None
 
         # Keep this item fixed in screen space
         self.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
@@ -139,6 +140,17 @@ class DynamicScaleBar(pg.GraphicsObject):
         self.vb.sigResized.connect(self._update_geometry)
 
         self._update_geometry()
+
+    def set_extra_label(self, text: str | None) -> None:
+        """Set an optional extra label drawn above the scale bar.
+
+        Intended primarily for export (e.g., file name and ROI number).
+        """
+
+        # Normalize empty strings to None
+        clean = text.strip() if isinstance(text, str) else None
+        self._extra_label = clean or None
+        self.update()
 
     def _choose_length(
         self, target_val: float, world_per_px: float, width_px: float
@@ -242,3 +254,8 @@ class DynamicScaleBar(pg.GraphicsObject):
         font.setPointSize(8)
         p.setFont(font)
         p.drawText(0, -cap - 3, self._label_text)
+
+        # Optional extra label (e.g. file name and ROI number) drawn above
+        # the standard scale-bar label. Kept in the same red color.
+        if self._extra_label:
+            p.drawText(0, -cap - 3 - 12, self._extra_label)
