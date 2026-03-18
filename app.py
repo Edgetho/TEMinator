@@ -215,6 +215,14 @@ class MainWindow(QtWidgets.QMainWindow):
 def main() -> None:
     """Main entry point for the application."""
     app = QtWidgets.QApplication(sys.argv)
+
+    # Optional: set a fun custom application icon if available.
+    # Place your icon file next to this app.py as "app_icon.png"
+    # (or adjust the filename below).
+    icon_path = Path(__file__).with_name("app_icon.png")
+    if icon_path.is_file():
+        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
