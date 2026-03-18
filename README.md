@@ -1,271 +1,161 @@
-# Fast FFT Image Analyzer
+Fast FFT Image Analyzer
+=======================
 
-A high-performance application for analyzing electron microscopy (EM) images with fast Fourier transform (FFT) analysis. Designed for clear interpretation of scientific EM images with support for both real-space and diffraction pattern analysis.
+Desktop viewer for electron microscopy and related scientific images with fast, interactive FFT analysis, distance measurements, and metadata-aware scaling.
 
-## Features
+The application is built with PyQt / pyqtgraph and HyperSpy and is intended for quick inspection of both real‑space images and diffraction patterns.
 
-- **Drag & Drop Interface**: Simply drag image files into the application to open them
-- **Multiple ROIs**: Create multiple regions of interest (ROIs), each with independent FFT analysis in separate windows
-- **Real-time FFT**: FFT calculations occur only when ROI positioning is complete (optimized for performance)
-- **Inverse FFT**: Toggle between FFT magnitude and inverse FFT display for each ROI
-- **Distance Measurement**: Draw lines to measure distances with automatic d-spacing calculation for diffraction patterns
-- **Automatic Image Type Detection**: Detects whether images are diffraction patterns or real-space images
-- **Proper Unit Handling**: Preserves and displays physical units from image metadata throughout analysis
-- **Multi-Window Analysis**: Analyze multiple images simultaneously with independent FFT windows for each ROI
+---
 
-## Installation
+Getting started
+---------------
 
-### Prerequisites
+### 1. Install dependencies (recommended: conda)
 
-- **Anaconda** or **Miniconda** (recommended)
-- Python 3.9 or higher
+From the project root:
 
-### Quick Setup
+```bash
+conda env create -f environment.yml
+conda activate fft-image-analyzer
+```
 
-1. **Clone or download this repository**
+This creates an environment with Python 3.9, NumPy, pyqtgraph, PyQt, and HyperSpy.
 
-2. **Create the conda environment**:
-   ```bash
-   conda env create -f environment.yml
-   ```
-
-3. **Activate the environment**:
-   ```bash
-   conda activate fft-image-analyzer
-   ```
-
-4. **Run the application**:
-   ```bash
-   python main.py
-   ```
-
-### Manual Installation (if not using conda)
-
-If you prefer pip, install the required packages:
+If you prefer `pip`, install the same packages manually:
 
 ```bash
 pip install numpy pyqtgraph pyqt5 hyperspy
 ```
 
-Then run:
+### 2. Run the application
+
+From the project root:
+
 ```bash
 python main.py
 ```
 
-## Usage Guide
+On startup you will see a small main window with drag‑and‑drop instructions.
 
-### Opening Images
+---
 
-1. **Launch the application**: Run `python main.py`
-2. **Drag and drop**: Simply drag an image file onto the main window (it will be blank/gray initially)
-3. **Supported formats**: DM3, DM4, TIFF, and other formats supported by HyperSpy
+Basic usage
+-----------
 
-The application automatically:
-- Detects the image type (real-space or diffraction pattern)
-- Sets appropriate axis labels and units from image metadata
-- Creates an initial ROI and shows its FFT in a new window
+### Opening images
 
-### Analyzing Images
+- Drag one or more supported files (DM3/DM4, TIFF, and any format HyperSpy can read) onto the main window.
+- Each image (or navigation position in a HyperSpy signal) opens in its own **Image Viewer** window.
+- If a file contains a navigation stack, one viewer is created per 2D slice.
 
-#### Creating and Managing ROIs
+### Image Viewer window
 
-1. **Add a new ROI**: Click the "Add New ROI" button in the toolbar
-   - Each ROI is displayed with a unique color and number label
-   - ROI numbers appear on the image for easy identification
+Each viewer window shows a single 2D image with tools for FFTs, measurements, and metadata.
 
-2. **Position an ROI**:
-   - Click and drag to move it
-   - Drag the corner handles to resize it
-   - When you release the mouse, the FFT automatically updates
+Toolbar controls:
 
-3. **View FFT**: Each completed ROI opens (or updates) its own FFT window
-   - Window title shows: `FFT - [Image Name] - ROI [Number]`
-   - FFT is calculated only when you finish moving/resizing (for performance)
+- **Add New FFT Box** – adds a colored rectangular ROI on the current view. The box size is chosen relative to the visible region so it is always a useful starting size.
+- **Measure Distance** (toggle) – enables an interactive line‑drawing tool for distance and (for diffraction patterns) d‑spacing measurement.
+- **Clear Measurements** – removes all measurement lines/labels from the image and clears the history window.
+- **Delete Selected** – deletes the currently selected measurement or FFT box.
+- **Image Metadata** – opens a window showing the full HyperSpy metadata dictionary for the current image.
+- **Measurement History** – opens a separate window listing all measurements taken in this viewer.
 
-#### FFT Display Options
+Other behaviour:
 
-In each FFT window:
+- Images are shown in physical coordinates derived from HyperSpy metadata when available (axis scales and units).
+- A dynamic overlay scale bar is drawn for real‑space images; it automatically updates size and label with zoom.
+- Diffraction patterns are detected heuristically so measurements can be reported as d‑spacings.
 
-1. **Show Inverse FFT**: Check this box to toggle between:
-   - **Unchecked**: FFT magnitude spectrum (default)
-   - **Checked**: Inverse FFT (reconstructed real-space image)
+### Working with FFT boxes
 
-2. **Axis Labels**: 
-   - Automatically shows reciprocal space units (e.g., 1/nm)
-   - Scaling is computed from image metadata for accuracy
+- Click **Add New FFT Box** to create a new ROI.
+- Drag inside the box to move it; drag its corner handles to resize.
+- When you release the mouse after moving or resizing, the FFT for that region is (re)computed.
+- Each FFT box has:
+  - A colored rectangle on the image.
+  - A text label like “FFT 0”, “FFT 1”, … anchored near the box.
 
-#### Measuring Distances
+Interaction:
 
-1. **Enable measurement tool**: Click "Measure Distance" in the toolbar
-   - A message will appear with instructions
-   - Click the button again to toggle the tool on/off
+- **Single‑click** an FFT box to select it (for deletion via **Delete Selected**).
+- **Double‑click** an FFT box to open or bring its FFT window to the front.
+- Moving a box updates its existing FFT window; a new FFT window is only created the first time the box is finalized.
 
-2. **Drawing a measurement line**:
-   - Click once on the image to set the start point
-   - Move the mouse to preview the line (yellow dashed)
-   - Click again to set the end point and complete the measurement
+### FFT windows
 
-3. **Results**:
-   - A dialog shows the measured distance in physical units
-   - Also displays the distance in pixels
-   - **For diffraction patterns**: Shows d-spacing (in Ångströms)
-   - **For real-space images**: Shows physical distance in image units
+- Each FFT box has at most one associated **FFT Viewer** window.
+- The window title has the form `FFT – <image name> – FFT <id>`.
+- The FFT is computed with a 2D Hanning window and displayed with a `magma` colormap.
+- Axes are labelled in reciprocal units using the pixel scale (e.g. 1/m or 1/nm, depending on calibration).
+- A dynamic overlay scale bar, analogous to the real‑space view, shows a convenient reciprocal‑space distance in screen coordinates.
 
-4. **Drawn lines**: Measurement lines remain visible as white lines on the image
+Controls in an FFT window:
 
-### Example Workflow
+- **Show Inverse FFT** – when checked, displays the magnitude of the inverse FFT of the windowed ROI instead of the magnitude spectrum.
+- **Measure Distance / Clear Measurements / Measurement History** – the same measurement tools available in the main image viewer, but operating directly in reciprocal‑space coordinates; d‑spacings are computed from measured reciprocal distances.
 
-1. Launch the app: `python main.py`
-2. Drag a diffraction pattern image onto the window
-3. The first ROI opens automatically with its FFT window
-4. Click "Measure Distance" and measure a bright ring to get d-spacing
-5. Click "Add New ROI" to select another region
-6. Adjust the new ROI by dragging; its FFT window updates automatically
-7. Check "Show Inverse FFT" in any FFT window to see the reconstructed real-space
-8. Compare FFTs from different regions by having multiple FFT windows open
+### Measuring distances
 
-## Window Management
+1. Click **Measure Distance** to enter measurement mode (the button is highlighted).
+2. Click once on the image to set the start point of the line.
+3. Move the mouse to preview the line (yellow dashed preview).
+4. Click again to set the end point; a solid white line and label are added.
+5. Press `Esc` or toggle **Measure Distance** off to leave measurement mode.
 
-### Image Viewer Window
-- **Title**: `Image Viewer - [Image Filename]`
-- **Shows**: Original image with colored ROI boxes and labels
-- **Toolbar**: "Add New ROI", "Measure Distance" buttons
+Reported values:
 
-### FFT Windows
-- **Title**: `FFT - [Image Name] - ROI [Number]`
-- **One window per ROI**: Each ROI has its own FFT window
-- **Reuses windows**: Moving an ROI updates its existing FFT window instead of creating a new one
+- Distances are computed in the physical units of the axes when calibration is available, and in pixels otherwise.
+- For real‑space images, labels show physical distance plus the equivalent in pixels.
+- For diffraction patterns, labels show d‑spacing (in Å) plus the reciprocal‑space distance.
 
-## Supported Image Formats
+Measurement management:
 
-The application uses HyperSpy for image loading, supporting:
+- Clicking a label selects that measurement; **Delete Selected** removes it from the image.
+- **Clear Measurements** removes all measurement graphics and clears the history.
+- The **Measurement History** window lists every measurement taken and supports clearing, deleting, copying to clipboard, and CSV export.
 
-- **Electron microscopy formats**: DM3, DM4 (Gatan formats)
-- **Standard formats**: TIFF, PNG, JPG
-- **Scientific formats**: HDF5, NetCDF
-- **Other formats**: See HyperSpy documentation
+---
 
-## Technical Details
+Architecture overview
+---------------------
 
-### Performance Optimization
+Source layout:
 
-FFT calculations are expensive operations. The application is optimized by:
+- `app.py` – all Qt windows, widgets, and interaction logic (main window, image viewer, FFT viewer, tools).
+- `utils.py` – numerical helpers for FFTs, line measurements, SI‑scaled units, and diffraction‑pattern detection.
+- `main.py` – thin entry point that imports and runs `app.main()`.
+- `environment.yml` – conda environment definition.
 
-- **Calculation timing**: FFT only computes when you finish moving an ROI (using `sigRegionChangeFinished` signal)
-- **Window reuse**: Moving an existing ROI updates its FFT window instead of creating a new one
-- **Efficient algorithms**: Uses NumPy's optimized FFT library with Hanning windowing
+At runtime:
 
-### Image Metadata Preservation
+- The **MainWindow** accepts drag‑and‑drop and dispatches each dropped file to a helper that loads it with HyperSpy and opens one or more **ImageViewerWindow** instances.
+- Each **ImageViewerWindow** owns its FFT boxes, measurement graphics, optional measurement history window, and metadata window.
+- Each FFT box is a `pyqtgraph.RectROI` subclass wired to an **FFTViewerWindow** that displays and caches FFT results.
+- Low‑level NumPy/FFT utilities live in `utils.py` and are shared between viewers.
 
-Physical scaling, axis labels, and units are preserved from the image metadata:
+For a detailed per‑class and per‑function description, see the separate technical document: `TECHNICAL_DOCUMENTATION.md`.
 
-- Displayed in the image viewer window labels
-- Used to calculate accurate Nyquist frequencies for FFT display
-- Maintained in distance measurements and d-spacing calculations
+---
 
-### Diffraction Pattern Detection
+Troubleshooting
+---------------
 
-The app includes automatic detection of diffraction patterns by analyzing:
+- **No image opens** – check that the file format is supported by HyperSpy and that the path is readable.
+- **FFT window is blank** – ensure the FFT box covers at least a 2×2 region of the image.
+- **Measurements show “inf” d‑spacing** – this occurs when the measured reciprocal‑space distance is numerically zero; try measuring a larger feature.
+- **Calibration warning** – if metadata does not contain usable pixel size information, the viewer falls back to unit‑per‑pixel scaling and shows a warning dialog.
 
-- Brightness ratio between image center and edges
-- Assumes bright centers are diffraction patterns
-- Used to automatically enable d-spacing calculations
+---
 
-If detection is incorrect, you can still manually measure distances (d-spacing won't calculate for real-space images).
+Development notes
+-----------------
 
-## Troubleshooting
+- The project targets Python 3.9 and PyQt via `pyqtgraph.Qt` for flexibility across Qt bindings.
+- HyperSpy is used only for I/O and metadata; image display and interaction is handled entirely by pyqtgraph.
+- GUI classes are kept in a single module for ease of navigation; numerical work is confined to `utils.py`.
 
-### "Could not determine pixel size" warning
+License and citation
+--------------------
 
-This is a non-critical HyperSpy warning. It appears when image metadata doesn't include pixel size information. The app will still function normally.
-
-### Image won't load
-
-- Ensure the file format is supported by HyperSpy
-- Check that the file path doesn't contain special characters
-- Try a different image file to verify the app works
-
-### FFT window doesn't update when moving ROI
-
-- Ensure you released the mouse button completely
-- FFT updates on `sigRegionChangeFinished`, not during dragging
-
-### d-spacing showing as "inf" or very large values
-
-- This occurs when measuring very small distances in reciprocal space
-- The mathematical relationship is: d-spacing = 1 / distance
-- Try measuring larger features (ring diameter instead of a point)
-
-## Architecture
-
-### File Structure
-
-```
-image_app/
-├── main.py              # Entry point
-├── app.py               # Main application classes and UI
-├── utils.py             # FFT and measurement utilities
-├── environment.yml      # Anaconda environment definition
-├── README.md            # This file
-└── REFACTOR_NOTES.md    # Technical refactoring notes
-```
-
-### Main Classes
-
-- **`MainWindow`**: Drag-and-drop entry point for opening images
-- **`ImageViewerWindow`**: Image display with ROI management
-- **`FFTViewerWindow`**: FFT display window
-- **`LineDrawingTool`**: Interactive line measurement tool
-
-### Utility Functions
-
-- `compute_fft()`: FFT calculation with windowing and scaling
-- `compute_inverse_fft()`: Inverse FFT reconstruction
-- `measure_line_distance()`: Distance and d-spacing calculations
-- `is_diffraction_pattern()`: Image type detection
-
-## Performance Notes
-
-- Typical FFT computation time: 10-100ms depending on ROI size
-- ~50MB RAM for typical EM images
-- Multiple windows open simultaneously have minimal performance impact
-- Line drawing adds minimal overhead
-
-## Future Enhancements
-
-- ROI presets and templates
-- Automated diffraction ring detection
-- Batch processing for multiple images
-- Export analysis results to files
-- Customizable electron wavelength for d-spacing
-- Radial averaging of FFT data
-- Measurement history tracking
-
-## Contributing
-
-For bug reports or feature requests, please document:
-- Steps to reproduce
-- Expected behavior
-- Actual behavior
-- Image file type (if applicable)
-
-## License
-
-Check the project repository for license information.
-
-## Citation
-
-If you use this tool in published research, please cite:
-
-```
-Fast FFT Image Analyzer
-https://github.com/[repository-path]
-```
-
-## Support
-
-For issues with:
-- **Installation**: Check you have conda installed and internet connection
-- **Image loading**: Verify the file format is supported by HyperSpy
-- **FFT calculations**: Ensure ROI is large enough (minimum 2x2 pixels)
-- **HyperSpy integration**: See https://hyperspy.org for documentation
+Please refer to the repository for licensing details. If you use this tool in scientific work, consider acknowledging it as “Fast FFT Image Analyzer (image_app)” in your methods or acknowledgements section.

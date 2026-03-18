@@ -207,3 +207,63 @@ def is_diffraction_pattern(image_data: np.ndarray, center_ratio: float = 2.0) ->
     
     # Diffraction patterns typically have bright centers
     return center_mean > edge_mean * center_ratio
+
+
+def apply_intensity_transform(
+    image: np.ndarray,
+    min_val: Optional[float],
+    max_val: Optional[float],
+    gamma: Optional[float] = 1.0,
+) -> Optional[np.ndarray]:
+    """Apply min/max window and gamma correction to an image.
+
+    The transformation is defined as:
+
+    - First clamp to the window ``[min_val, max_val]``.
+    - Normalize to ``[0, 1]``.
+    - Apply gamma mapping ``out = norm ** (1 / gamma)``.
+
+    Args:
+        image: Input image array (any numeric type).
+        min_val: Input value mapped to black (0). If ``None`` uses ``image`` min.
+        max_val: Input value mapped to white (1). If ``None`` uses ``image`` max.
+        gamma: Gamma exponent (>0). ``1.0`` is linear, ``>1`` darkens mid-tones.
+
+    Returns:
+        New float32 array in the range [0, 1], or ``None`` if ``image`` is invalid.
+    """
+
+    if image is None:
+        return None
+
+    arr = np.asarray(image, dtype=np.float32)
+    if arr.size == 0:
+        return None
+
+    finite_mask = np.isfinite(arr)
+    if not np.any(finite_mask):
+        # No finite values; just return zeros of the same shape
+        return np.zeros_like(arr, dtype=np.float32)
+
+    finite_vals = arr[finite_mask]
+
+    if min_val is None or not np.isfinite(min_val):
+        min_val = float(np.min(finite_vals))
+    if max_val is None or not np.isfinite(max_val):
+        max_val = float(np.max(finite_vals))
+
+    # Ensure a non-degenerate window
+    if max_val <= min_val:
+        eps = np.finfo(np.float32).eps
+        max_val = min_val + eps
+
+    norm = (arr - float(min_val)) / float(max_val - min_val)
+    norm = np.clip(norm, 0.0, 1.0, out=norm)
+
+    if gamma is None or gamma <= 0 or not np.isfinite(gamma):
+        gamma = 1.0
+
+    inv_gamma = 1.0 / float(gamma)
+    corrected = np.power(norm, inv_gamma, dtype=np.float32)
+
+    return corrected
