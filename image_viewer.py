@@ -53,6 +53,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.measurement_items: List[Tuple[pg.PlotDataItem, pg.TextItem]] = []
         self.selected_measurement_index: Optional[int] = None
 
+        # Colormap state for the main image view
+        self._available_colormaps: List[str] = [
+            "gray",
+            "viridis",
+            "plasma",
+            "magma",
+            "inferno",
+            "cividis",
+        ]
+        self._current_colormap_index: int = 0
+        self.btn_colormap: Optional[QtWidgets.QAbstractButton] = None
+
         # Vim-style command line (":" commands)
         self.command_edit: Optional[QtWidgets.QLineEdit] = None
 
@@ -320,6 +332,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.img_orig = pg.ImageItem(axisOrder="row-major")
         self.p1.addItem(self.img_orig)
         self.p1.invertY(True)
+        self._apply_colormap()
         self._update_image_display()
 
         x_offset, y_offset, w, h = self.image_bounds
@@ -356,6 +369,35 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.img_orig.setImage(adjusted, autoLevels=False, levels=(0.0, 1.0))
 
+    def _apply_colormap(self) -> None:
+        """Apply the currently selected colormap to the main image."""
+
+        if self.img_orig is None:
+            return
+
+        if not self._available_colormaps:
+            return
+
+        name = self._available_colormaps[self._current_colormap_index % len(self._available_colormaps)]
+
+        # "gray" means the default grayscale appearance (no custom LUT)
+        if name == "gray":
+            try:
+                self.img_orig.setLookupTable(None)
+            except Exception:
+                pass
+            return
+
+        try:
+            cmap = pg.colormap.get(name)
+            self.img_orig.setLookupTable(cmap.getLookupTable())
+        except Exception:
+            # Fall back to default grayscale if something goes wrong
+            try:
+                self.img_orig.setLookupTable(None)
+            except Exception:
+                pass
+
     def setup_keyboard_shortcuts(self):
         delete_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Delete, self)
         delete_shortcut.activated.connect(self._delete_selected_roi)
@@ -367,6 +409,24 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         escape_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self)
         escape_shortcut.activated.connect(self._exit_measure_mode)
+
+    def _set_colormap_by_name(self, name: str) -> None:
+        """Set the active colormap by name and update the button label."""
+
+        if not self._available_colormaps:
+            return
+
+        try:
+            index = self._available_colormaps.index(name)
+        except ValueError:
+            return
+
+        self._current_colormap_index = index
+
+        if self.btn_colormap is not None:
+            self.btn_colormap.setText(f"Colormap: {name}")
+
+        self._apply_colormap()
 
     # Vim-style command handling -------------------------------------
 
@@ -657,6 +717,23 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         btn_save_views = QtWidgets.QPushButton("Save View && FFTs")
         btn_save_views.clicked.connect(self._save_view_and_ffts)
         layout.addWidget(btn_save_views)
+
+        # Optional: dropdown to choose between grayscale and several perceptually uniform colormaps
+        colormap_button = QtWidgets.QToolButton()
+        colormap_button.setText("Colormap: gray")
+        colormap_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+
+        colormap_menu = QtWidgets.QMenu(colormap_button)
+        for name in self._available_colormaps:
+            action = colormap_menu.addAction(name)
+
+            # Capture the name at definition time
+            action.triggered.connect(lambda checked=False, n=name: self._set_colormap_by_name(n))
+
+        colormap_button.setMenu(colormap_menu)
+        layout.addWidget(colormap_button)
+
+        self.btn_colormap = colormap_button
 
         layout.addStretch()
         return layout

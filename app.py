@@ -26,7 +26,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Fast FFT Image Analyzer")
+        self.setWindowTitle("TEMinator!")
         self.resize(*DEFAULT_MAIN_WINDOW_SIZE)
         self.setAcceptDrops(True)
 
