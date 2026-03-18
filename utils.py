@@ -67,30 +67,45 @@ def calculate_d_spacing(frequency: float, wavelength: float = 0.00251) -> float:
 
 
 def measure_line_distance(p1: Tuple[float, float], p2: Tuple[float, float], 
-                         scale: float, is_reciprocal: bool = False) -> dict:
+                         scale_x: float, scale_y: float = None, is_reciprocal: bool = False) -> dict:
     """
     Measure distance between two points.
     
     Args:
         p1: First point (x, y)
         p2: Second point (x, y)
-        scale: Physical scale (units per pixel)
+        scale_x: Physical scale along x-axis (units per pixel)
+        scale_y: Physical scale along y-axis (units per pixel). If None, uses scale_x for both.
         is_reciprocal: Whether this is reciprocal space
         
     Returns:
         Dictionary with distance and d-spacing (if reciprocal)
     """
-    dist_pixels = np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
-    dist_physical = dist_pixels * scale
+    if scale_y is None:
+        scale_y = scale_x
+    
+    # Calculate distance in pixels, accounting for anisotropic scaling
+    dx_pixels = p2[0] - p1[0]
+    dy_pixels = p2[1] - p1[1]
+    dist_pixels = np.sqrt(dx_pixels**2 + dy_pixels**2)
+    
+    # Calculate distance in physical units
+    dx_physical = dx_pixels * scale_x
+    dy_physical = dy_pixels * scale_y
+    dist_physical = np.sqrt(dx_physical**2 + dy_physical**2)
     
     result = {
         'distance_pixels': dist_pixels,
         'distance_physical': dist_physical,
-        'scale': scale
+        'scale_x': scale_x,
+        'scale_y': scale_y
     }
     
-    if is_reciprocal:
-        result['d_spacing'] = calculate_d_spacing(1.0 / dist_physical) if dist_physical != 0 else float('inf')
+    if is_reciprocal and dist_physical != 0:
+        # For reciprocal space, frequency is the inverse of distance
+        # d-spacing = 1 / frequency
+        frequency = 1.0 / dist_physical
+        result['d_spacing'] = calculate_d_spacing(frequency)
     
     return result
 

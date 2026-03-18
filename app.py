@@ -102,35 +102,55 @@ class LineDrawingTool:
         self.start_point = None
         self.line_item = None
         self.is_enabled = False
+        self.vb = plot.vb
+        self.original_mouse_enabled = True
+        
+        # Store original mouse event methods
+        self.original_mouse_press_event = self.vb.mousePressEvent
+        self.original_mouse_move_event = self.vb.mouseMoveEvent
+        self.original_mouse_release_event = self.vb.mouseReleaseEvent
         
     def enable(self):
         """Enable line drawing mode."""
         self.is_enabled = True
-        self.plot.scene().sigMouseClicked.connect(self._on_click)
-        self.plot.scene().sigMouseMoved.connect(self._on_move)
+        self.drawing = False
+        self.start_point = None
+        
+        # Replace mouse event handlers with our own
+        self.vb.mousePressEvent = self._on_mouse_press
+        self.vb.mouseMoveEvent = self._on_mouse_move
+        self.vb.mouseReleaseEvent = self._on_mouse_release
         
     def disable(self):
         """Disable line drawing mode."""
         self.is_enabled = False
-        try:
-            self.plot.scene().sigMouseClicked.disconnect(self._on_click)
-            self.plot.scene().sigMouseMoved.disconnect(self._on_move)
-        except:
-            pass
+        
+        # Restore original mouse event handlers
+        self.vb.mousePressEvent = self.original_mouse_press_event
+        self.vb.mouseMoveEvent = self.original_mouse_move_event
+        self.vb.mouseReleaseEvent = self.original_mouse_release_event
+        
+        # Clean up preview line
         if self.line_item:
             self.plot.removeItem(self.line_item)
             self.line_item = None
+        
+        self.drawing = False
+        self.start_point = None
     
-    def _on_click(self, pos):
-        """Handle mouse click for line drawing."""
+    def _on_mouse_press(self, event):
+        """Handle mouse press for line drawing."""
         if not self.is_enabled:
+            self.original_mouse_press_event(event)
             return
         
-        scene_pos = pos[0]
+        # Get position in view coordinates
+        scene_pos = event.scenePos()
         if not self.plot.sceneBoundingRect().contains(scene_pos):
+            self.original_mouse_press_event(event)
             return
         
-        view_pos = self.plot.vb.mapSceneToView(scene_pos)
+        view_pos = self.vb.mapSceneToView(scene_pos)
         
         if not self.drawing:
             # Start new line
@@ -138,37 +158,59 @@ class LineDrawingTool:
             self.start_point = (view_pos.x(), view_pos.y())
             if self.line_item:
                 self.plot.removeItem(self.line_item)
+                self.line_item = None
         else:
             # End line and emit callback
             end_point = (view_pos.x(), view_pos.y())
             self.drawing = False
-            self.on_line_drawn_callback(self.start_point, end_point)
             
+            # Remove preview line
             if self.line_item:
                 self.plot.removeItem(self.line_item)
-            self.line_item = None
+                self.line_item = None
+            
+            # Call the measurement callback
+            self.on_line_drawn_callback(self.start_point, end_point)
+            self.start_point = None
+        
+        event.accept()
     
-    def _on_move(self, pos):
+    def _on_mouse_move(self, event):
         """Handle mouse move for line drawing preview."""
-        if not self.is_enabled or not self.drawing or self.start_point is None:
+        if not self.is_enabled:
+            self.original_mouse_move_event(event)
             return
         
-        scene_pos = pos
+        if not self.drawing or self.start_point is None:
+            self.original_mouse_move_event(event)
+            return
+        
+        scene_pos = event.scenePos()
         if not self.plot.sceneBoundingRect().contains(scene_pos):
+            self.original_mouse_move_event(event)
             return
         
-        view_pos = self.plot.vb.mapSceneToView(scene_pos)
+        view_pos = self.vb.mapSceneToView(scene_pos)
         
-        # Draw preview line
+        # Update preview line
         if self.line_item:
             self.plot.removeItem(self.line_item)
         
-        self.line_item = pg.LineROI(
-            [self.start_point[0], self.start_point[1]],
-            [view_pos.x(), view_pos.y()],
+        self.line_item = pg.PlotDataItem(
+            [self.start_point[0], view_pos.x()],
+            [self.start_point[1], view_pos.y()],
             pen=pg.mkPen('y', width=2, style=QtCore.Qt.DashLine)
         )
         self.plot.addItem(self.line_item)
+        event.accept()
+    
+    def _on_mouse_release(self, event):
+        """Handle mouse release."""
+        if not self.is_enabled:
+            self.original_mouse_release_event(event)
+            return
+        
+        event.accept()
 
 
 class ImageViewerWindow(QtWidgets.QMainWindow):
@@ -344,10 +386,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         
     def _on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]):
         """Handle completed line measurement."""
-        # Determine scale and whether reciprocal
-        scale = self.ax_x.scale
+        # Get scales for both axes
+        scale_x = self.ax_x.scale
+        scale_y = self.ax_y.scale
         
-        result = utils.measure_line_distance(p1, p2, scale, self.is_reciprocal_space)
+        result = utils.measure_line_distance(p1, p2, scale_x, scale_y, self.is_reciprocal_space)
         
         msg = f"Distance: {result['distance_physical']:.4f} {self.ax_x.units}\n"
         msg += f"Pixels: {result['distance_pixels']:.1f}\n"
@@ -358,8 +401,31 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.information(self, "Measurement Result", msg)
         
         # Draw the line on the plot
-        line = pg.LineROI([p1[0], p1[1]], [p2[0], p2[1]], pen=pg.mkPen('w', width=2))
+        line = pg.PlotDataItem(
+            [p1[0], p2[0]],
+            [p1[1], p2[1]],
+            pen=pg.mkPen('w', width=2)
+        )
         self.p1.addItem(line)
+        
+        # Format the distance label with units
+        if self.is_reciprocal_space and 'd_spacing' in result:
+            label_text = f"d: {result['d_spacing']:.4f} Å\n({result['distance_physical']:.4f} {self.ax_x.units}⁻¹)"
+        else:
+            label_text = f"{result['distance_physical']:.4f} {self.ax_x.units}\n({result['distance_pixels']:.1f} px)"
+        
+        # Calculate midpoint with small offset for better visibility
+        mid_x = (p1[0] + p2[0]) / 2
+        mid_y = (p1[1] + p2[1]) / 2
+        
+        # Create text annotation similar to ROI labels
+        text_item = pg.TextItem(
+            label_text,
+            anchor=(0, 0),
+            fill=pg.mkBrush(255, 255, 100, 220)  # Yellow background
+        )
+        text_item.setPos(mid_x, mid_y)
+        self.p1.addItem(text_item)
         
 
 class MainWindow(QtWidgets.QMainWindow):
