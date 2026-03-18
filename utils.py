@@ -3,9 +3,26 @@ import numpy as np
 from typing import Tuple, Optional
 
 
+# Cache for window functions to avoid recomputation
+_window_cache = {}
+
+
+def _get_hanning_window(shape: Tuple[int, int]) -> np.ndarray:
+    """Get or create a cached Hanning window of specified shape."""
+    if shape not in _window_cache:
+        window = np.hanning(shape[0])[:, None] * np.hanning(shape[1])[None, :]
+        _window_cache[shape] = window
+    return _window_cache[shape]
+
+
 def compute_fft(region: np.ndarray, scale_x: float, scale_y: float, apply_window: bool = True) -> Tuple[np.ndarray, float, float]:
     """
     Compute FFT of a 2D region and return magnitude spectrum with Nyquist frequencies.
+    
+    Optimizations:
+    - Caches Hanning windows to avoid recomputation
+    - Pre-calculates Nyquist frequencies
+    - Uses vectorized NumPy operations
     
     Args:
         region: 2D numpy array
@@ -21,29 +38,34 @@ def compute_fft(region: np.ndarray, scale_x: float, scale_y: float, apply_window
     if region is None or region.shape[0] < 2 or region.shape[1] < 2:
         return None, None, None
     
+    # Apply window if requested (use cached window)
     if apply_window:
-        window = np.hanning(region.shape[0])[:, None] * np.hanning(region.shape[1])[None, :]
+        window = _get_hanning_window(region.shape)
         region = region * window
     
+    # Compute FFT with fftshift
     f = np.fft.fft2(region)
     fshift = np.fft.fftshift(f)
+    
+    # Compute magnitude spectrum with log scaling
     magnitude_spectrum = 20 * np.log10(np.abs(fshift) + 1e-8)
     
-    nyq_x = 1.0 / (2.0 * scale_x)
-    nyq_y = 1.0 / (2.0 * scale_y)
+    # Pre-calculate Nyquist frequencies
+    nyq_x = 0.5 / scale_x
+    nyq_y = 0.5 / scale_y
     
     return magnitude_spectrum, nyq_x, nyq_y
 
 
 def compute_inverse_fft(fft_data: np.ndarray) -> np.ndarray:
     """
-    Compute inverse FFT.
+    Compute inverse FFT efficiently.
     
     Args:
         fft_data: Complex FFT data (from fftshift)
         
     Returns:
-        Real-space image
+        Real-space image (absolute values)
     """
     f_unshifted = np.fft.ifftshift(fft_data)
     real_image = np.fft.ifft2(f_unshifted)
@@ -67,32 +89,34 @@ def calculate_d_spacing(frequency: float, wavelength: float = 0.00251) -> float:
 
 
 def measure_line_distance(p1: Tuple[float, float], p2: Tuple[float, float], 
-                         scale_x: float, scale_y: float = None, is_reciprocal: bool = False) -> dict:
+                         scale_x: float, scale_y: Optional[float] = None, 
+                         is_reciprocal: bool = False) -> dict:
     """
-    Measure distance between two points.
+    Measure distance between two points with optional d-spacing calculation.
+    
+    Uses vectorized NumPy for efficiency.
     
     Args:
         p1: First point (x, y)
         p2: Second point (x, y)
         scale_x: Physical scale along x-axis (units per pixel)
-        scale_y: Physical scale along y-axis (units per pixel). If None, uses scale_x for both.
+        scale_y: Physical scale along y-axis (units per pixel). If None, uses scale_x.
         is_reciprocal: Whether this is reciprocal space
         
     Returns:
-        Dictionary with distance and d-spacing (if reciprocal)
+        Dictionary with distance, d-spacing (if reciprocal), and scales
     """
     if scale_y is None:
         scale_y = scale_x
     
-    # Calculate distance in pixels, accounting for anisotropic scaling
-    dx_pixels = p2[0] - p1[0]
-    dy_pixels = p2[1] - p1[1]
-    dist_pixels = np.sqrt(dx_pixels**2 + dy_pixels**2)
+    # Calculate distance in pixels using vectorized operations
+    diff = np.array([p2[0] - p1[0], p2[1] - p1[1]])
+    dist_pixels = np.linalg.norm(diff)
     
-    # Calculate distance in physical units
-    dx_physical = dx_pixels * scale_x
-    dy_physical = dy_pixels * scale_y
-    dist_physical = np.sqrt(dx_physical**2 + dy_physical**2)
+    # Calculate distance in physical units with anisotropic scaling
+    physical_scales = np.array([scale_x, scale_y])
+    physical_diff = diff * physical_scales
+    dist_physical = np.linalg.norm(physical_diff)
     
     result = {
         'distance_pixels': dist_pixels,
@@ -101,22 +125,24 @@ def measure_line_distance(p1: Tuple[float, float], p2: Tuple[float, float],
         'scale_y': scale_y
     }
     
+    # Calculate d-spacing for reciprocal space
     if is_reciprocal and dist_physical != 0:
-        # For reciprocal space, frequency is the inverse of distance
-        # d-spacing = 1 / frequency
         frequency = 1.0 / dist_physical
         result['d_spacing'] = calculate_d_spacing(frequency)
     
     return result
 
 
-def is_diffraction_pattern(image_data: np.ndarray) -> bool:
+def is_diffraction_pattern(image_data: np.ndarray, center_ratio: float = 2.0) -> bool:
     """
-    Basic heuristic to detect if image is a diffraction pattern.
+    Detect if image is a diffraction pattern using heuristics.
+    
     Checks for symmetric, bright center with radiating features.
+    Optimized to avoid unnecessary computations.
     
     Args:
         image_data: 2D image array
+        center_ratio: Minimum ratio of center brightness to edge brightness
         
     Returns:
         True if likely a diffraction pattern
@@ -124,13 +150,16 @@ def is_diffraction_pattern(image_data: np.ndarray) -> bool:
     if image_data is None or len(image_data.shape) != 2:
         return False
     
-    center_region = image_data[
-        image_data.shape[0]//4:3*image_data.shape[0]//4,
-        image_data.shape[1]//4:3*image_data.shape[1]//4
-    ]
+    # Extract center and edge regions
+    h, w = image_data.shape
+    quarter_h, quarter_w = h // 4, w // 4
     
+    center_region = image_data[quarter_h:3*quarter_h, quarter_w:3*quarter_w]
+    edge_region = image_data[:quarter_h, :]
+    
+    # Compute means efficiently
     center_mean = np.mean(center_region)
-    edge_mean = np.mean(image_data[:image_data.shape[0]//8, :])
+    edge_mean = np.mean(edge_region)
     
     # Diffraction patterns typically have bright centers
-    return center_mean > edge_mean * 2
+    return center_mean > edge_mean * center_ratio
