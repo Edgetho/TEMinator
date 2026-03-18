@@ -3,16 +3,17 @@ make clear interpretation of scientific EM images as easy as possible.
 
 ensure high performance whenever possible.
 
+use as many python files as are needed to ensure the best coding style and outcome
+
 
 ## desired features to add
-- drag and drop an image file into the application to open a new window with the image open in it
-- set the image title based on the file name
-
-- ensure that the scaling bars are set properly for the forier transform 
+- after activating the measure distance mode, click on teh image to get a meassurement that is then labelled with united with an annotation on the image and then also placed into the history pane of measurements with a proper label and units.
+- ensure that the scaling bars are set properly (into a sensible SI unit, not something silly like knm) for the forier transform and original display image
 - ensure the scale bars and axes labels/units are set properly for images that are diffraction patterns
+- use a microscope style scale bar and do not use the default axes style shown in the pasted image
+- force the pixel ratio to always be 1:1 
 
-- allow for computing of the inverse FT by setting a box in the options menu
 
-- allow for the drawing of lines to measure distances. For a diffraction image, the output should be the d-spacing along with the reciprocal space distance, and for real-space images this should be the real-space distance
 
-- allow for multiple regions of interest to be generated each each of which launches a separate child window with the appropriate (inverse) FT shown.s
+
+- add an option to delete an ROI by selecting it and then deleting it

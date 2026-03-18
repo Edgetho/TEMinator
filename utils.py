@@ -6,6 +6,50 @@ from typing import Tuple, Optional
 # Cache for window functions to avoid recomputation
 _window_cache = {}
 
+# SI prefix conversions
+SI_PREFIXES = [
+    (1e9, 'G'),
+    (1e6, 'M'),
+    (1e3, 'k'),
+    (1.0, ''),
+    (1e-3, 'm'),
+    (1e-6, 'μ'),
+    (1e-9, 'n'),
+    (1e-12, 'p'),
+    (1e-15, 'f'),
+]
+
+
+def format_si_scale(value: float, base_unit: str = '', precision: int = 3) -> Tuple[float, str]:
+    """
+    Format a scale value into a nice SI unit.
+    
+    Args:
+        value: The value in base units
+        base_unit: The base unit (e.g., 'm', 'Hz', 'Å')
+        precision: Number of significant figures
+        
+    Returns:
+        (scaled_value, formatted_unit_string)
+    """
+    if value == 0 or not np.isfinite(value):
+        return value, base_unit
+    
+    abs_value = abs(value)
+    
+    # Find appropriate SI prefix
+    for factor, prefix in SI_PREFIXES:
+        if abs_value >= factor * 0.95:  # Use 0.95 threshold to avoid .999k instead of 1M
+            scaled = value / factor
+            unit_str = f"{prefix}{base_unit}" if prefix else base_unit
+            return scaled, unit_str
+    
+    # If value is extremely small, use the smallest prefix
+    factor, prefix = SI_PREFIXES[-1]
+    scaled = value / factor
+    unit_str = f"{prefix}{base_unit}"
+    return scaled, unit_str
+
 
 def _get_hanning_window(shape: Tuple[int, int]) -> np.ndarray:
     """Get or create a cached Hanning window of specified shape."""
