@@ -343,9 +343,27 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.p1.setXRange(x_offset, x_offset + w, padding=0)
         self.p1.setYRange(y_offset, y_offset + h, padding=0)
 
-        if not self.is_reciprocal_space:
-            units = self.ax_x.units if self.ax_x is not None and self.ax_x.units else "m"
+        # Real-space vs reciprocal-space scale bars
+        units = self.ax_x.units if self.ax_x is not None and self.ax_x.units else "m"
+        if self.is_reciprocal_space:
+            # Diffraction / reciprocal view: label in m⁻¹, nm⁻¹, Å⁻¹, etc.
             self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+            self.scale_bar.reciprocal = True
+        else:
+            # Real-space image: standard scale bar in metres / nm / Å.
+            self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+
+            # Always show the same metadata label on-screen that is used
+            # when exporting images, so the viewer window and saved image
+            # stay consistent.
+            try:
+                overlay_label = self._build_export_overlay_label()
+                if overlay_label and hasattr(self.scale_bar, "set_extra_label"):
+                    self.scale_bar.set_extra_label(overlay_label)
+            except Exception:
+                # If metadata is unavailable or something goes wrong,
+                # fall back silently to a plain scale bar.
+                pass
 
         self.line_tool = LineDrawingTool(self.p1, self._on_line_drawn)
 

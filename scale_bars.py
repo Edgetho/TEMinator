@@ -119,6 +119,9 @@ class DynamicScaleBar(pg.GraphicsObject):
 
         self.vb = viewbox
         self.units = units or ""
+        # When True, the label is rendered as reciprocal units (e.g. m⁻¹)
+        # by appending a "⁻¹" exponent to the formatted SI unit string.
+        self.reciprocal: bool = False
         self.min_frac = float(min_frac)
         self.max_frac = float(max_frac)
         self.margin = margin
@@ -220,7 +223,10 @@ class DynamicScaleBar(pg.GraphicsObject):
 
         scaled, unit_str = utils.format_si_scale(length_val, self.units)
         if unit_str:
-            label = f"{scaled:.3g} {unit_str}"
+            if self.reciprocal:
+                label = f"{scaled:.3g} {unit_str}\N{SUPERSCRIPT MINUS}1"
+            else:
+                label = f"{scaled:.3g} {unit_str}"
         else:
             label = f"{scaled:.3g}"
 

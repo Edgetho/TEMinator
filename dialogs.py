@@ -199,6 +199,14 @@ class ToneCurveDialog(QtWidgets.QDialog):
         self.image = np.asarray(image, dtype=float)
         self.on_params_changed = on_params_changed
 
+        # Debounce parameter change callbacks to avoid excessive
+        # full-image re-renders while the user is dragging handles.
+        self._emit_delay_ms = 30  # ~33 fps worst case
+        self._emit_timer = QtCore.QTimer(self)
+        self._emit_timer.setSingleShot(True)
+        self._emit_timer.timeout.connect(self._emit_params_now)
+        self._pending_params = None
+
         finite_mask = np.isfinite(self.image)
         if np.any(finite_mask):
             finite_vals = self.image[finite_mask]
@@ -389,8 +397,28 @@ class ToneCurveDialog(QtWidgets.QDialog):
         self.edit_gamma.setText(f"{self.gamma:.6g}")
 
     def _emit_params(self):
-        if self.on_params_changed is not None and not self._building:
-            self.on_params_changed(self.min_val, self.max_val, self.gamma)
+        """Schedule a debounced callback with the latest parameters.
+
+        This avoids triggering a full image re-render on every tiny drag
+        step from the min/max lines or gamma handle while keeping the UI
+        responsive.
+        """
+
+        if self.on_params_changed is None or self._building:
+            return
+
+        self._pending_params = (self.min_val, self.max_val, self.gamma)
+
+        if self._emit_timer.isActive():
+            self._emit_timer.stop()
+        self._emit_timer.start(self._emit_delay_ms)
+
+    def _emit_params_now(self):
+        if self.on_params_changed is None or self._pending_params is None:
+            return
+
+        min_val, max_val, gamma = self._pending_params
+        self.on_params_changed(min_val, max_val, gamma)
 
     # Event handlers ----------------------------------------------------
 

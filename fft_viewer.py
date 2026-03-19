@@ -52,6 +52,8 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
         self.region = region
         self.parent_image_window = parent
 
+        # Base real-space units for the parent image; used to derive
+        # reciprocal-space labels such as m⁻¹, nm⁻¹, or Å⁻¹.
         self.fft_unit_x = f"1/{self.ax_x_units}" if self.ax_x_units else "1/px"
         self.fft_unit_y = f"1/{self.ax_y_units}" if self.ax_y_units else "1/px"
         self.is_reciprocal_space = True
@@ -141,7 +143,11 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
         if hasattr(self.plot.vb, "setPadding"):
             self.plot.vb.setPadding(0.0)
 
-        self.scale_bar = DynamicScaleBar(self.plot.vb, units=self.fft_unit_x)
+        # FFT / diffraction view: show a reciprocal-space scale bar
+        # using the parent image's spatial units (e.g. m, nm, Å) and
+        # render them as m⁻¹, nm⁻¹, or Å⁻¹ as appropriate.
+        self.scale_bar = DynamicScaleBar(self.plot.vb, units=self.freq_axis_base_unit)
+        self.scale_bar.reciprocal = True
 
         self.line_tool = LineDrawingTool(self.plot, self._on_line_drawn)
 
