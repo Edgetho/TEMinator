@@ -15,7 +15,6 @@ from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 import utils
 from dialogs import MeasurementHistoryWindow, MetadataWindow, ToneCurveDialog
-from fft_viewer import FFTViewerWindow
 from measurement_tools import (
     LineDrawingTool,
     FFTBoxROI,
@@ -28,25 +27,39 @@ from scale_bars import DynamicScaleBar
 
 FFT_COLORS = ["r", "g", "b", "y", "c", "m"]
 DEFAULT_IMAGE_WINDOW_SIZE = (1000, 900)
+DEFAULT_FFT_WINDOW_SIZE = (700, 700)
 
 
 class ImageViewerWindow(QtWidgets.QMainWindow):
     """Window for viewing and analyzing a single image with FFT boxes."""
 
-    def __init__(self, file_path: str, signal=None, window_suffix: Optional[str] = None):
+    def __init__(
+        self,
+        file_path: str,
+        signal=None,
+        window_suffix: Optional[str] = None,
+        view_mode: str = "image",
+        fft_region: Optional[np.ndarray] = None,
+        fft_name: Optional[str] = None,
+        parent_image_window: Optional["ImageViewerWindow"] = None,
+    ):
         super().__init__()
         self.setAcceptDrops(True)
         self.file_path = file_path
+        self.view_mode = view_mode
         self.signal = None
         self.data = None
         self.ax_x = None
         self.ax_y = None
+        self.p1 = None
+        self.img_orig = None
+        self.glw = None
         self.fft_boxes: List[pg.RectROI] = []
         self.fft_count = 0
         self.is_reciprocal_space = False
         self.line_tool: Optional[LineDrawingTool] = None
-        self.fft_windows: List[FFTViewerWindow] = []
-        self.fft_to_fft_window: Dict[pg.RectROI, FFTViewerWindow] = {}
+        self.fft_windows: List["ImageViewerWindow"] = []
+        self.fft_to_fft_window: Dict[pg.RectROI, "ImageViewerWindow"] = {}
         self.fft_box_meta: Dict[pg.RectROI, Dict[str, object]] = {}
         self.selected_fft_box: Optional[pg.RectROI] = None
         self.scale_bar: Optional[DynamicScaleBar] = None
@@ -77,7 +90,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.display_gamma: float = 1.0
         self._tone_dialog: Optional[ToneCurveDialog] = None
 
-        if signal is not None:
+        self.fft_name = fft_name
+        self.parent_image_window = parent_image_window
+        self._magnitude_spectrum = None
+        self._fft_complex = None
+        self._inverse_fft_cache = None
+        self._nyq_x = None
+        self._nyq_y = None
+        self._last_region_id = None
+        self._fft_region = fft_region
+        self.chk_inverse: Optional[QtWidgets.QCheckBox] = None
+        self._inverse_action: Optional[QtWidgets.QAction] = None
+        self.freq_axis_base_unit: str = "m"
+
+        if self.view_mode == "fft":
+            self._setup_fft_view()
+        elif signal is not None:
             self._setup_from_signal(signal, window_suffix)
         else:
             self._load_and_setup()
@@ -152,6 +180,32 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.setup_ui()
         self.resize(*DEFAULT_IMAGE_WINDOW_SIZE)
+
+    def _setup_fft_view(self):
+        if self._fft_region is None:
+            QtWidgets.QMessageBox.critical(self, "FFT", "Could not create FFT view: missing ROI data.")
+            self.close()
+            return
+
+        parent = self.parent_image_window
+        if parent is None or parent.ax_x is None or parent.ax_y is None:
+            QtWidgets.QMessageBox.critical(self, "FFT", "Could not create FFT view: missing parent calibration.")
+            self.close()
+            return
+
+        self.is_reciprocal_space = True
+        self.ax_x = parent.ax_x
+        self.ax_y = parent.ax_y
+        self.freq_axis_base_unit = self.ax_x.units or "m"
+
+        parent_title = parent.windowTitle().replace("Image Viewer - ", "")
+        display_name = self.fft_name or "FFT"
+        self.setWindowTitle(f"Image Viewer - {parent_title} - {display_name}")
+
+        self._compute_fft()
+        self._init_display_window()
+        self.setup_ui()
+        self.resize(*DEFAULT_FFT_WINDOW_SIZE)
 
     def _get_original_metadata_dict(self) -> Optional[dict]:
         if self.signal is None:
@@ -278,13 +332,17 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return x_offset, y_offset, w, h
 
     def _init_display_window(self):
-        if self.data is None:
+        source_data = self.data
+        if self.view_mode == "fft":
+            source_data = self._magnitude_spectrum
+
+        if source_data is None:
             self.display_min = 0.0
             self.display_max = 1.0
             self.display_gamma = 1.0
             return
 
-        arr = np.asarray(self.data, dtype=float)
+        arr = np.asarray(source_data, dtype=float)
         finite = arr[np.isfinite(arr)]
         if finite.size == 0:
             self.display_min = 0.0
@@ -298,9 +356,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         main_layout = QtWidgets.QVBoxLayout(central)
-
-        toolbar = self._create_toolbar()
-        main_layout.addLayout(toolbar)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        self._setup_menu_bar()
 
         self.glw = pg.GraphicsLayoutWidget()
         self.glw.ci.setContentsMargins(0, 0, 0, 0)
@@ -323,6 +380,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         colon_shortcut = QtGui.QShortcut(QtGui.QKeySequence(":"), self)
         colon_shortcut.activated.connect(self._enter_command_mode)
 
+        self.btn_measure = QtWidgets.QPushButton("Measure Distance")
+        self.btn_measure.setCheckable(True)
+        self.btn_measure.hide()
+
+        self.chk_inverse = QtWidgets.QCheckBox("Show Inverse FFT")
+        self.chk_inverse.hide()
+        self.chk_inverse.stateChanged.connect(lambda _state: self._update_image_display())
+
         self.p1 = self.glw.addPlot()
         self.p1.hideAxis("bottom")
         self.p1.hideAxis("left")
@@ -336,38 +401,42 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.img_orig = pg.ImageItem(axisOrder="row-major")
         self.p1.addItem(self.img_orig)
         self.p1.invertY(True)
-        self._apply_colormap()
-        self._update_image_display()
-
-        x_offset, y_offset, w, h = self.image_bounds
-        self.img_orig.setRect(QtCore.QRectF(x_offset, y_offset, w, h))
-
-        if hasattr(self.p1.vb, "setPadding"):
-            self.p1.vb.setPadding(0.0)
-        self.p1.setXRange(x_offset, x_offset + w, padding=0)
-        self.p1.setYRange(y_offset, y_offset + h, padding=0)
-
-        # Real-space vs reciprocal-space scale bars
-        units = self.ax_x.units if self.ax_x is not None and self.ax_x.units else "m"
-        if self.is_reciprocal_space:
-            # Diffraction / reciprocal view: label in m⁻¹, nm⁻¹, Å⁻¹, etc.
-            self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+        if self.view_mode == "fft":
+            cmap = pg.colormap.get("magma")
+            self.img_orig.setLookupTable(cmap.getLookupTable())
+            self._update_image_display()
+            if self._nyq_x is not None and self._nyq_y is not None:
+                self.img_orig.setRect(
+                    QtCore.QRectF(-self._nyq_x, -self._nyq_y, 2 * self._nyq_x, 2 * self._nyq_y)
+                )
+            if hasattr(self.p1.vb, "setPadding"):
+                self.p1.vb.setPadding(0.0)
+            self.scale_bar = DynamicScaleBar(self.p1.vb, units=self.freq_axis_base_unit)
             self.scale_bar.reciprocal = True
         else:
-            # Real-space image: standard scale bar in metres / nm / Å.
-            self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+            self._apply_colormap()
+            self._update_image_display()
 
-            # Always show the same metadata label on-screen that is used
-            # when exporting images, so the viewer window and saved image
-            # stay consistent.
-            try:
-                overlay_label = self._build_export_overlay_label()
-                if overlay_label and hasattr(self.scale_bar, "set_extra_label"):
-                    self.scale_bar.set_extra_label(overlay_label)
-            except Exception:
-                # If metadata is unavailable or something goes wrong,
-                # fall back silently to a plain scale bar.
-                pass
+            x_offset, y_offset, w, h = self.image_bounds
+            self.img_orig.setRect(QtCore.QRectF(x_offset, y_offset, w, h))
+
+            if hasattr(self.p1.vb, "setPadding"):
+                self.p1.vb.setPadding(0.0)
+            self.p1.setXRange(x_offset, x_offset + w, padding=0)
+            self.p1.setYRange(y_offset, y_offset + h, padding=0)
+
+            units = self.ax_x.units if self.ax_x is not None and self.ax_x.units else "m"
+            if self.is_reciprocal_space:
+                self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+                self.scale_bar.reciprocal = True
+            else:
+                self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+                try:
+                    overlay_label = self._build_export_overlay_label()
+                    if overlay_label and hasattr(self.scale_bar, "set_extra_label"):
+                        self.scale_bar.set_extra_label(overlay_label)
+                except Exception:
+                    pass
 
         self.line_tool = LineDrawingTool(self.p1, self._on_line_drawn)
 
@@ -375,10 +444,38 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _update_image_display(self):
         if self.data is None or self.img_orig is None:
-            return
+            if self.view_mode != "fft":
+                return
 
         if self.display_min is None or self.display_max is None:
             self._init_display_window()
+
+        if self.view_mode == "fft":
+            if self._magnitude_spectrum is None:
+                return
+
+            if self.chk_inverse is not None and self.chk_inverse.isChecked():
+                if self._inverse_fft_cache is None:
+                    self._inverse_fft_cache = utils.compute_inverse_fft(self._fft_complex)
+                display_data = self._inverse_fft_cache
+            else:
+                display_data = self._magnitude_spectrum
+
+            adjusted = utils.apply_intensity_transform(
+                display_data,
+                self.display_min,
+                self.display_max,
+                self.display_gamma,
+            )
+            if adjusted is None:
+                return
+
+            self.img_orig.setImage(adjusted, autoLevels=False, levels=(0.0, 1.0))
+            if self._nyq_x is not None and self._nyq_y is not None:
+                self.img_orig.setRect(
+                    QtCore.QRectF(-self._nyq_x, -self._nyq_y, 2 * self._nyq_x, 2 * self._nyq_y)
+                )
+            return
 
         adjusted = utils.apply_intensity_transform(
             self.data,
@@ -449,6 +546,29 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.btn_colormap.setText(f"Colormap: {name}")
 
         self._apply_colormap()
+
+    def _compute_fft(self):
+        if self._fft_region is None or self.ax_x is None or self.ax_y is None:
+            return
+
+        current_region_id = id(self._fft_region)
+        if self._last_region_id == current_region_id and self._magnitude_spectrum is not None:
+            return
+
+        self._last_region_id = current_region_id
+
+        self._magnitude_spectrum, self._nyq_x, self._nyq_y = utils.compute_fft(
+            self._fft_region,
+            self.ax_x.scale,
+            self.ax_y.scale,
+        )
+
+        window = np.hanning(self._fft_region.shape[0])[:, None] * np.hanning(
+            self._fft_region.shape[1]
+        )[None, :]
+        windowed = self._fft_region * window
+        self._fft_complex = np.fft.fftshift(np.fft.fft2(windowed))
+        self._inverse_fft_cache = None
 
     # Vim-style command handling -------------------------------------
 
@@ -619,7 +739,10 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         dialog.exec_()
 
     def _open_adjust_dialog(self):
-        if self.data is None:
+        if self.view_mode == "fft" and self._magnitude_spectrum is None:
+            return
+
+        if self.view_mode != "fft" and self.data is None:
             return
 
         if self._tone_dialog is not None and self._tone_dialog.isVisible():
@@ -637,8 +760,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.display_gamma = float(gamma)
             self._update_image_display()
 
+        if self.view_mode == "fft":
+            if self.chk_inverse is not None and self.chk_inverse.isChecked():
+                if self._inverse_fft_cache is None and self._fft_complex is not None:
+                    self._inverse_fft_cache = utils.compute_inverse_fft(self._fft_complex)
+                source_data = self._inverse_fft_cache if self._inverse_fft_cache is not None else self._magnitude_spectrum
+            else:
+                source_data = self._magnitude_spectrum
+        else:
+            source_data = self.data
+
         dialog = ToneCurveDialog(
-            self.data,
+            source_data,
             initial_min=initial_min,
             initial_max=initial_max,
             initial_gamma=initial_gamma,
@@ -704,61 +837,86 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         QtWidgets.QMessageBox.information(self, "Deleted", f"FFT Box {index} deleted.")
 
-    def _create_toolbar(self) -> QtWidgets.QHBoxLayout:
-        layout = QtWidgets.QHBoxLayout()
+    def _setup_menu_bar(self) -> None:
+        menu_bar = self.menuBar()
+        menu_bar.clear()
 
-        btn_add_fft = QtWidgets.QPushButton("Add New FFT Box")
-        btn_add_fft.clicked.connect(self._add_new_fft)
-        layout.addWidget(btn_add_fft)
+        file_menu = menu_bar.addMenu("File")
+        act_open = file_menu.addAction("Open")
+        act_open.triggered.connect(self._open_file_dialog)
 
-        self.btn_measure = QtWidgets.QPushButton("Measure Distance")
-        self.btn_measure.setCheckable(True)
-        self.btn_measure.clicked.connect(self._toggle_line_measurement)
-        layout.addWidget(self.btn_measure)
+        act_save_view = file_menu.addAction("Save View")
+        act_save_view.triggered.connect(self._save_view_and_ffts)
 
-        btn_clear_meas = QtWidgets.QPushButton("Clear Measurements")
-        btn_clear_meas.clicked.connect(self._clear_measurements)
-        layout.addWidget(btn_clear_meas)
+        act_build_figure = file_menu.addAction("Build Figure")
+        act_build_figure.triggered.connect(lambda: self._show_not_implemented("Build Figure"))
 
-        btn_delete_selected = QtWidgets.QPushButton("Delete Selected")
-        btn_delete_selected.clicked.connect(self._delete_selected_roi)
-        layout.addWidget(btn_delete_selected)
+        act_parameters = file_menu.addAction("Parameters")
+        act_parameters.triggered.connect(lambda: self._show_not_implemented("Parameters"))
 
-        btn_metadata = QtWidgets.QPushButton("Image Metadata")
-        btn_metadata.clicked.connect(self._show_metadata_window)
-        layout.addWidget(btn_metadata)
+        manipulate_menu = menu_bar.addMenu("Manipulate")
+        act_fft = manipulate_menu.addAction("FFT")
+        act_fft.triggered.connect(self._add_new_fft)
+        act_fft.setEnabled(self.view_mode == "image")
 
-        btn_history = QtWidgets.QPushButton("Measurement History")
-        btn_history.clicked.connect(self._show_measurement_history)
-        layout.addWidget(btn_history)
+        act_inverse_fft = manipulate_menu.addAction("Inverse FFT")
+        if self.view_mode == "fft":
+            act_inverse_fft.setCheckable(True)
+            act_inverse_fft.toggled.connect(self._on_inverse_fft_toggled)
+            self._inverse_action = act_inverse_fft
+        else:
+            act_inverse_fft.setEnabled(False)
 
-        btn_adjust = QtWidgets.QPushButton("Adjust Image")
-        btn_adjust.clicked.connect(self._open_adjust_dialog)
-        layout.addWidget(btn_adjust)
+        measure_menu = menu_bar.addMenu("Measure")
+        act_distance = measure_menu.addAction("Distance")
+        act_distance.triggered.connect(self._menu_start_distance_measurement)
 
-        btn_save_views = QtWidgets.QPushButton("Save View && FFTs")
-        btn_save_views.clicked.connect(self._save_view_and_ffts)
-        layout.addWidget(btn_save_views)
+        act_history = measure_menu.addAction("History")
+        act_history.triggered.connect(self._show_measurement_history)
 
-        # Optional: dropdown to choose between grayscale and several perceptually uniform colormaps
-        colormap_button = QtWidgets.QToolButton()
-        colormap_button.setText("Colormap: gray")
-        colormap_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        act_intensity = measure_menu.addAction("Intensity")
+        act_intensity.triggered.connect(lambda: self._show_not_implemented("Intensity"))
 
-        colormap_menu = QtWidgets.QMenu(colormap_button)
-        for name in self._available_colormaps:
-            action = colormap_menu.addAction(name)
+        act_profile = measure_menu.addAction("Profile")
+        act_profile.triggered.connect(lambda: self._show_not_implemented("Profile"))
 
-            # Capture the name at definition time
-            action.triggered.connect(lambda checked=False, n=name: self._set_colormap_by_name(n))
+        display_menu = menu_bar.addMenu("Display")
+        act_adjust = display_menu.addAction("Adjust")
+        act_adjust.triggered.connect(self._open_adjust_dialog)
 
-        colormap_button.setMenu(colormap_menu)
-        layout.addWidget(colormap_button)
+        act_metadata = display_menu.addAction("Metadata")
+        act_metadata.triggered.connect(self._show_metadata_window)
+        act_metadata.setEnabled(self.view_mode == "image")
 
-        self.btn_colormap = colormap_button
+    def _show_not_implemented(self, feature_name: str) -> None:
+        QtWidgets.QMessageBox.information(
+            self,
+            feature_name,
+            f"{feature_name} is planned but not implemented yet.",
+        )
 
-        layout.addStretch()
-        return layout
+    def _open_file_dialog(self) -> None:
+        start_dir = str(Path(self.file_path).parent) if self.file_path else str(Path.cwd())
+        selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Image",
+            start_dir,
+            "Image files (*.dm3 *.dm4 *.tif *.tiff *.mrc *.ser *.png *.jpg *.jpeg);;All files (*)",
+        )
+        if selected_file:
+            open_image_file(selected_file)
+
+    def _menu_start_distance_measurement(self) -> None:
+        if self.btn_measure is not None and not self.btn_measure.isChecked():
+            self.btn_measure.setChecked(True)
+        self._toggle_line_measurement()
+
+    def _on_inverse_fft_toggled(self, checked: bool) -> None:
+        if self.chk_inverse is not None:
+            self.chk_inverse.blockSignals(True)
+            self.chk_inverse.setChecked(checked)
+            self.chk_inverse.blockSignals(False)
+        self._update_image_display()
 
     def _save_view_and_ffts(self) -> None:
         """Save the current view (with annotations) and any FFT windows.
@@ -960,6 +1118,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
 
     def _add_new_fft(self, x_offset=None, y_offset=None, w=None, h=None):
+        if self.view_mode != "image":
+            return
+
         if x_offset is None or y_offset is None or w is None or h is None:
             try:
                 (x_range, y_range) = self.p1.vb.viewRange()
@@ -1018,26 +1179,21 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     ):
         if fft_box in self.fft_to_fft_window:
             fft_window = self.fft_to_fft_window[fft_box]
-            fft_window.region = region
+            fft_window._fft_region = region
             fft_window._compute_fft()
-            fft_window.update_display()
+            fft_window._init_display_window()
+            fft_window._update_image_display()
             fft_window.show()
             fft_window.raise_()
             fft_window.activateWindow()
         else:
             fft_name = f"FFT {fft_id}"
-            parent_title = self.windowTitle().replace("Image Viewer - ", "")
-            fft_window = FFTViewerWindow(
-                self,
-                region,
-                self.ax_x.scale,
-                self.ax_y.scale,
-                self.ax_x.name,
-                self.ax_x.units,
-                self.ax_y.name,
-                self.ax_y.units,
-                fft_name,
-                parent_title,
+            fft_window = ImageViewerWindow(
+                self.file_path,
+                view_mode="fft",
+                fft_region=region,
+                fft_name=fft_name,
+                parent_image_window=self,
             )
             fft_window.show()
             self.fft_windows.append(fft_window)
@@ -1067,6 +1223,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.btn_measure.setStyleSheet("")
 
     def _toggle_line_measurement(self):
+        if self.line_tool is None:
+            return
+
         if self.btn_measure is not None and self.btn_measure.isChecked():
             self.line_tool.enable()
             self.btn_measure.setStyleSheet(
@@ -1080,6 +1239,48 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]):
         self.measurement_count += 1
         measurement_id = self.measurement_count
+
+        if self.view_mode == "fft":
+            dx_freq = float(p2[0] - p1[0])
+            dy_freq = float(p2[1] - p1[1])
+            dist_freq = float(np.hypot(dx_freq, dy_freq))
+
+            if self._nyq_x and self._nyq_y and self._fft_region is not None:
+                px_scale_x = (2.0 * float(self._nyq_x)) / float(self._fft_region.shape[1])
+                px_scale_y = (2.0 * float(self._nyq_y)) / float(self._fft_region.shape[0])
+                if px_scale_x != 0 and px_scale_y != 0:
+                    dx_px = dx_freq / px_scale_x
+                    dy_px = dy_freq / px_scale_y
+                    dist_px = float(np.hypot(dx_px, dy_px))
+                else:
+                    dist_px = 0.0
+            else:
+                dist_px = 0.0
+
+            result: Dict[str, float] = {
+                "distance_pixels": dist_px,
+                "distance_physical": dist_freq,
+                "scale_x": float(self.ax_x.scale) if self.ax_x else 1.0,
+                "scale_y": float(self.ax_y.scale) if self.ax_y else 1.0,
+            }
+            if dist_freq != 0:
+                result["d_spacing"] = utils.calculate_d_spacing(dist_freq)
+
+            line = pg.PlotDataItem([p1[0], p2[0]], [p1[1], p2[1]], pen=DRAWN_LINE_PEN)
+            self.p1.addItem(line)
+
+            label_text = self._format_measurement_label(result, measurement_id)
+            mid_x = (p1[0] + p2[0]) / 2.0
+            mid_y = (p1[1] + p2[1]) / 2.0
+
+            text_item = MeasurementLabel(label_text, anchor=(0, 0), fill=LABEL_BRUSH_COLOR)
+            text_item.setPos(mid_x, mid_y)
+            text_item.sigLabelClicked.connect(self._on_measurement_label_clicked)
+            self.p1.addItem(text_item)
+
+            self.measurement_items.append((line, text_item))
+            self._add_to_measurement_history(label_text)
+            return
 
         scale_x = float(self.ax_x.scale) if self.ax_x is not None else 1.0
         scale_y = float(self.ax_y.scale) if self.ax_y is not None else scale_x
@@ -1187,6 +1388,21 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _format_measurement_label(
         self, result: dict, measurement_id: Optional[int] = None
     ) -> str:
+        if self.view_mode == "fft":
+            scaled_dist, scaled_unit = utils.format_si_scale(
+                result["distance_physical"], self.freq_axis_base_unit
+            )
+            prefix = f"#{measurement_id} " if measurement_id is not None else ""
+            if "d_spacing" in result:
+                return (
+                    f"{prefix}d: {result['d_spacing']:.4f} Å\n"
+                    f"({scaled_dist:.4f} {scaled_unit}⁻¹)"
+                )
+            return (
+                f"{prefix}{scaled_dist:.4f} {scaled_unit}⁻¹\n"
+                f"({result['distance_pixels']:.1f} px)"
+            )
+
         scaled_dist, scaled_unit = utils.format_si_scale(
             result["distance_physical"], self.ax_x.units
         )

@@ -21,7 +21,6 @@ minimal Qt bootstrap; all substantial UI classes live in:
 - dialogs.py            – history, metadata, and tone-curve dialogs
 - measurement_tools.py  – line drawing, FFT ROI, measurement labels
 - scale_bars.py         – static and dynamic scale-bar items
-- fft_viewer.py         – FFTViewerWindow for individual ROIs
 - image_viewer.py       – ImageViewerWindow and helpers
 """
 
@@ -61,6 +60,8 @@ class MainWindow(QtWidgets.QMainWindow):
         colon_shortcut.activated.connect(self._enter_command_mode)
 
     def _setup_ui(self) -> None:
+        self._setup_menu_bar()
+
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
@@ -89,6 +90,48 @@ class MainWindow(QtWidgets.QMainWindow):
         self.command_edit.returnPressed.connect(self._execute_command_from_line)
         self.command_edit.hide()
         layout.addWidget(self.command_edit)
+
+    def _setup_menu_bar(self) -> None:
+        menu_bar = self.menuBar()
+        menu_bar.clear()
+
+        file_menu = menu_bar.addMenu("File")
+        act_open = file_menu.addAction("Open")
+        act_open.triggered.connect(self._open_file_dialog)
+        file_menu.addAction("Save View", lambda: self._show_not_implemented("Save View"))
+        file_menu.addAction("Build Figure", lambda: self._show_not_implemented("Build Figure"))
+        file_menu.addAction("Parameters", lambda: self._show_not_implemented("Parameters"))
+
+        manipulate_menu = menu_bar.addMenu("Manipulate")
+        manipulate_menu.addAction("FFT", lambda: self._show_not_implemented("FFT"))
+        manipulate_menu.addAction("Inverse FFT", lambda: self._show_not_implemented("Inverse FFT"))
+
+        measure_menu = menu_bar.addMenu("Measure")
+        measure_menu.addAction("Distance", lambda: self._show_not_implemented("Distance"))
+        measure_menu.addAction("History", lambda: self._show_not_implemented("History"))
+        measure_menu.addAction("Intensity", lambda: self._show_not_implemented("Intensity"))
+        measure_menu.addAction("Profile", lambda: self._show_not_implemented("Profile"))
+
+        display_menu = menu_bar.addMenu("Display")
+        display_menu.addAction("Adjust", lambda: self._show_not_implemented("Adjust"))
+        display_menu.addAction("Metadata", lambda: self._show_not_implemented("Metadata"))
+
+    def _show_not_implemented(self, feature_name: str) -> None:
+        QtWidgets.QMessageBox.information(
+            self,
+            feature_name,
+            f"{feature_name} is planned but not implemented yet.",
+        )
+
+    def _open_file_dialog(self) -> None:
+        selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Image",
+            str(Path.cwd()),
+            "Image files (*.dm3 *.dm4 *.tif *.tiff *.mrc *.ser *.png *.jpg *.jpeg);;All files (*)",
+        )
+        if selected_file:
+            self._open_image(selected_file)
 
     def dragEnterEvent(self, event):  # type: ignore[override]
         if event.mimeData().hasUrls():
