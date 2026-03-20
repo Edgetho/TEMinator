@@ -16,7 +16,14 @@ from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 import utils
 import unit_utils
-from dialogs import MeasurementHistoryWindow, MetadataWindow, ToneCurveDialog
+from command_utils import enter_command_mode, exit_command_mode, parse_command_input
+from dialogs import (
+    MeasurementHistoryWindow,
+    MetadataWindow,
+    ToneCurveDialog,
+)
+from file_navigation import IMAGE_FILE_FILTER
+from image_loader import open_image_file
 from measurement_tools import (
     LineDrawingTool,
     FFTBoxROI,
@@ -25,6 +32,11 @@ from measurement_tools import (
     DRAWN_LINE_PEN,
 )
 from scale_bars import DynamicScaleBar
+from viewer_fft import FFTWindowManager
+from viewer_measurements import MeasurementController
+from viewer_commands import (
+    ViewerCommandRouter,
+)
 
 
 FFT_COLORS = ["r", "g", "b", "y", "c", "m"]
@@ -111,6 +123,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._line_draw_mode: str = "measurement"
         self._calibration_dialog_state: Optional[Dict[str, Any]] = None
         self._on_calibration_pixels_selected: Optional[Callable[[float], None]] = None
+        self.measurements = MeasurementController(self, logger)
+        self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
+        self.commands = ViewerCommandRouter(self, logger)
 
         if self.view_mode == "fft":
             self._setup_fft_view()
@@ -887,38 +902,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return super().eventFilter(obj, event)
 
     def _enter_command_mode(self) -> None:
-        if self.command_edit is None:
-            return
-        self.command_edit.show()
-        self.command_edit.clear()
-        self.command_edit.setText(":")
-        self.command_edit.setFocus()
-        self.command_edit.setCursorPosition(len(self.command_edit.text()))
+        enter_command_mode(self.command_edit)
 
     def _exit_command_mode(self) -> None:
-        if self.command_edit is None:
-            return
-        self.command_edit.clear()
-        self.command_edit.hide()
-        # Return focus to the graphics view so normal keys work again
-        if hasattr(self.glw, "setFocus"):
-            self.glw.setFocus()
+        focus_target = self.glw if hasattr(self.glw, "setFocus") else None
+        exit_command_mode(self.command_edit, focus_target=focus_target)
 
     def _execute_command_from_line(self) -> None:
         if self.command_edit is None:
             return
 
-        text = self.command_edit.text().strip()
-        if text.startswith(":"):
-            text = text[1:]
-        text = text.strip()
-        if not text:
+        parsed = parse_command_input(self.command_edit.text())
+        if parsed is None:
             self._exit_command_mode()
             return
 
-        parts = text.split(maxsplit=1)
-        cmd = parts[0]
-        arg = parts[1] if len(parts) > 1 else ""
+        cmd, arg = parsed
 
         handled = self._run_vim_command(cmd, arg)
         if not handled:
@@ -931,104 +930,13 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._exit_command_mode()
 
     def _run_vim_command(self, cmd: str, arg: str) -> bool:
-        """Dispatch vim-like commands for this image window.
-
-        Supported commands:
-          :F              – add a new FFT ROI using current view
-          :d              – start distance measurement mode
-          :e <filename>   – open a file in this directory
-          :E              – fuzzy-open a file in this image's directory
-          :a              – open the adjustment window
-        """
-
-        cmd_str = cmd.strip()
-        if not cmd_str:
-            return False
-        logger.debug("Executing vim command: cmd=%s arg=%s", cmd, arg)
-
-        upper_cmd = cmd_str.upper()
-        lower_cmd = cmd_str.lower()
-
-        # :F – add new FFT ROI
-        if upper_cmd == "F":
-            self._add_new_fft()
-            return True
-
-        # :d – enable distance measurement mode
-        if upper_cmd == "D":
-            if self.btn_measure is not None:
-                if not self.btn_measure.isChecked():
-                    self.btn_measure.setChecked(True)
-                    self._toggle_line_measurement()
-            return True
-
-        # :a – open adjustment window
-        if upper_cmd == "A":
-            self._open_adjust_dialog()
-            return True
-
-        # :E – directory fuzzy finder for current image directory
-        if upper_cmd == "E" and not arg:
-            self._open_directory_fuzzy_view()
-            return True
-
-        # :e <filename> – open file (relative to current image directory by default)
-        if lower_cmd == "e":
-            if not arg:
-                QtWidgets.QMessageBox.information(
-                    self,
-                    "Command",
-                    "Usage: :e <filename>",
-                )
-                return True
-            self._open_file_by_name(arg)
-            return True
-
-        return False
+        return self.commands.run_vim_command(cmd, arg)
 
     def _open_file_by_name(self, filename: str) -> None:
-        from pathlib import Path as _Path
-
-        name = filename.strip().strip("\"").strip("'")
-        if not name:
-            return
-
-        path = _Path(name)
-        if not path.is_absolute():
-            try:
-                base = _Path(self.file_path).parent
-            except Exception:
-                base = _Path.cwd()
-            path = base / name
-
-        if not path.is_file():
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Open File",
-                f"File not found: {path}",
-            )
-            return
-
-        open_image_file(str(path))
+        self.commands.open_file_by_name(filename)
 
     def _open_directory_fuzzy_view(self) -> None:
-        from pathlib import Path as _Path
-
-        try:
-            directory = _Path(self.file_path).parent
-        except Exception:
-            directory = _Path.cwd()
-
-        if not directory.is_dir():
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Directory",
-                f"Directory not found: {directory}",
-            )
-            return
-
-        dialog = DirectoryFuzzyOpenDialog(self, directory)
-        dialog.exec_()
+        self.commands.open_directory_fuzzy_view()
 
     def _open_adjust_dialog(self):
         if self.view_mode == "fft" and self._magnitude_spectrum is None:
@@ -1098,36 +1006,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         dialog.activateWindow()
 
     def _delete_selected_roi(self):
-        if self.selected_measurement_index is not None:
-            self._delete_selected_measurement()
-            return
-
-        fft_box = self.selected_fft_box
-        if fft_box is None or fft_box not in self.fft_boxes:
-            QtWidgets.QMessageBox.information(
-                self, "Delete", "No measurement or ROI selected."
-            )
-            return
-
-        index = self.fft_boxes.index(fft_box)
-        self.p1.removeItem(fft_box)
-
-        meta = self.fft_box_meta.pop(fft_box, None)
-        if meta is not None:
-            text_item = meta.get("text_item")
-            if text_item is not None:
-                self.p1.removeItem(text_item)
-
-        fft_window = self.fft_to_fft_window.pop(fft_box, None)
-        if fft_window is not None:
-            fft_window.close()
-            if fft_window in self.fft_windows:
-                self.fft_windows.remove(fft_window)
-
-        self.fft_boxes.pop(index)
-        self.selected_fft_box = None
-
-        QtWidgets.QMessageBox.information(self, "Deleted", f"FFT Box {index} deleted.")
+        self.fft_manager.delete_selected_roi()
 
     def _setup_menu_bar(self) -> None:
         menu_bar = self.menuBar()
@@ -1194,7 +1073,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self,
             "Open Image",
             start_dir,
-            "Image files (*.dm3 *.dm4 *.tif *.tiff *.mrc *.ser *.png *.jpg *.jpeg);;All files (*)",
+            IMAGE_FILE_FILTER,
         )
         if selected_file:
             open_image_file(selected_file)
@@ -1417,383 +1296,61 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
 
     def _add_new_fft(self, x_offset=None, y_offset=None, w=None, h=None):
-        if self.view_mode != "image":
-            return
-
-        if x_offset is None or y_offset is None or w is None or h is None:
-            try:
-                (x_range, y_range) = self.p1.vb.viewRange()
-                x0, x1 = x_range
-                y0, y1 = y_range
-                x_offset = float(x0)
-                y_offset = float(y0)
-                w = float(x1 - x0)
-                h = float(y1 - y0)
-            except Exception:
-                x_offset, y_offset, w, h = self.image_bounds
-
-        if w is None or h is None or w <= 0 or h <= 0:
-            QtWidgets.QMessageBox.warning(self, "Error", "Invalid image bounds")
-            return
-
-        color = FFT_COLORS[self.fft_count % len(FFT_COLORS)]
-        roi_x = float(x_offset) + float(w) / 4.0
-        roi_y = float(y_offset) + float(h) / 4.0
-        roi_w = float(w) / 2.0
-        roi_h = float(h) / 2.0
-        fft_box = FFTBoxROI([roi_x, roi_y], [roi_w, roi_h], pen=pg.mkPen(color, width=2))
-        fft_box.addScaleHandle([1, 1], [0, 0])
-        fft_box.addScaleHandle([0, 0], [1, 1])
-        self.p1.addItem(fft_box)
-
-        fft_id = self.fft_count
-        self.fft_count += 1
-
-        text_item = pg.TextItem(f"FFT {fft_id}", anchor=(0, 0), fill=pg.mkBrush(color))
-        text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
-        self.p1.addItem(text_item)
-
-        fft_box.sigRegionChangeFinished.connect(
-            lambda: self._on_fft_finished(fft_box, fft_id, text_item)
-        )
-        fft_box.sigBoxClicked.connect(lambda roi=fft_box: self._on_fft_box_clicked(roi))
-        fft_box.sigBoxDoubleClicked.connect(
-            lambda roi=fft_box: self._on_fft_box_double_clicked(roi, fft_id, text_item)
-        )
-        self.fft_boxes.append(fft_box)
-        self.fft_box_meta[fft_box] = {"id": fft_id, "text_item": text_item}
-        logger.debug(
-            "Added FFT ROI id=%s at (%.3f, %.3f) size=(%.3f, %.3f)",
-            fft_id,
-            roi_x,
-            roi_y,
-            roi_w,
-            roi_h,
-        )
+        self.fft_manager.add_new_fft(x_offset, y_offset, w, h)
 
     def _on_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem):
-        region = fft_box.getArrayRegion(self.data, self.img_orig)
-
-        if region is None or region.shape[0] < 2 or region.shape[1] < 2:
-            return
-
-        text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
-        logger.debug("FFT ROI finalized id=%s region_shape=%s", fft_id, getattr(region, "shape", None))
-
-        self._open_or_update_fft_window(fft_box, fft_id, text_item, region)
+        self.fft_manager.on_fft_finished(fft_box, fft_id, text_item)
 
     def _open_or_update_fft_window(
         self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem, region: np.ndarray
     ):
-        if fft_box in self.fft_to_fft_window:
-            logger.debug("Updating FFT window for id=%s", fft_id)
-            fft_window = self.fft_to_fft_window[fft_box]
-            fft_window._fft_region = region
-            fft_window._compute_fft()
-            fft_window._init_display_window()
-            fft_window._update_image_display()
-            fft_window.show()
-            fft_window.raise_()
-            fft_window.activateWindow()
-        else:
-            logger.debug("Creating FFT window for id=%s", fft_id)
-            fft_name = f"FFT {fft_id}"
-            fft_window = ImageViewerWindow(
-                self.file_path,
-                view_mode="fft",
-                fft_region=region,
-                fft_name=fft_name,
-                parent_image_window=self,
-            )
-            fft_window.show()
-            self.fft_windows.append(fft_window)
-            self.fft_to_fft_window[fft_box] = fft_window
+        self.fft_manager.open_or_update_fft_window(fft_box, fft_id, text_item, region)
 
     def _on_fft_box_clicked(self, fft_box: pg.RectROI):
-        if fft_box in self.fft_boxes:
-            self.selected_fft_box = fft_box
+        self.fft_manager.on_fft_box_clicked(fft_box)
 
     def _on_fft_box_double_clicked(
         self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem
     ):
-        region = fft_box.getArrayRegion(self.data, self.img_orig)
-        if region is None or region.shape[0] < 2 or region.shape[1] < 2:
-            return
-
-        text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
-        self._open_or_update_fft_window(fft_box, fft_id, text_item, region)
+        self.fft_manager.on_fft_box_double_clicked(fft_box, fft_id, text_item)
 
     def _exit_measure_mode(self):
-        if self._line_draw_mode == "calibration":
-            self._line_draw_mode = "measurement"
-            self._on_calibration_pixels_selected = None
-            state = dict(self._calibration_dialog_state or {})
-            self._calibration_dialog_state = None
-            if state:
-                QtCore.QTimer.singleShot(0, lambda: self._open_calibration_dialog(state))
-
-        if self.btn_measure is not None and self.btn_measure.isChecked():
-            self.btn_measure.setChecked(False)
-
-        if self.line_tool is not None:
-            self.line_tool.disable()
-        if self.btn_measure is not None:
-            self.btn_measure.setStyleSheet("")
+        self.measurements.exit_measure_mode()
 
     def _toggle_line_measurement(self):
-        if self.line_tool is None:
-            return
-
-        if self.btn_measure is not None and self.btn_measure.isChecked():
-            self._line_draw_mode = "measurement"
-            self._on_calibration_pixels_selected = None
-            self.line_tool.enable()
-            self.btn_measure.setStyleSheet(
-                "background-color: #4caf50; color: white;"
-            )
-        else:
-            self.line_tool.disable()
-            if self.btn_measure is not None:
-                self.btn_measure.setStyleSheet("")
+        self.measurements.toggle_line_measurement()
 
     def _on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]):
-        if self._line_draw_mode == "calibration":
-            scale_x = float(self.ax_x.scale) if self.ax_x is not None else 1.0
-            scale_y = float(self.ax_y.scale) if self.ax_y is not None else scale_x
-
-            dx_phys = float(p2[0] - p1[0])
-            dy_phys = float(p2[1] - p1[1])
-            if scale_x != 0 and scale_y != 0:
-                dx_px = dx_phys / scale_x
-                dy_px = dy_phys / scale_y
-                dist_px = float(np.hypot(dx_px, dy_px))
-            else:
-                dist_px = 0.0
-
-            self._line_draw_mode = "measurement"
-            if self.line_tool is not None:
-                self.line_tool.disable()
-
-            callback = self._on_calibration_pixels_selected
-            self._on_calibration_pixels_selected = None
-            if callback is not None:
-                callback(dist_px)
-            return
-
-        self.measurement_count += 1
-        measurement_id = self.measurement_count
-
-        if self.view_mode == "fft":
-            dx_freq = float(p2[0] - p1[0])
-            dy_freq = float(p2[1] - p1[1])
-            dist_freq = float(np.hypot(dx_freq, dy_freq))
-
-            if self._nyq_x and self._nyq_y and self._fft_region is not None:
-                px_scale_x = (2.0 * float(self._nyq_x)) / float(self._fft_region.shape[1])
-                px_scale_y = (2.0 * float(self._nyq_y)) / float(self._fft_region.shape[0])
-                if px_scale_x != 0 and px_scale_y != 0:
-                    dx_px = dx_freq / px_scale_x
-                    dy_px = dy_freq / px_scale_y
-                    dist_px = float(np.hypot(dx_px, dy_px))
-                else:
-                    dist_px = 0.0
-            else:
-                dist_px = 0.0
-
-            result: Dict[str, float] = {
-                "distance_pixels": dist_px,
-                "distance_physical": dist_freq,
-                "scale_x": float(self.ax_x.scale) if self.ax_x else 1.0,
-                "scale_y": float(self.ax_y.scale) if self.ax_y else 1.0,
-            }
-            if dist_freq != 0:
-                result["d_spacing"] = utils.calculate_d_spacing(dist_freq)
-
-            line = pg.PlotDataItem([p1[0], p2[0]], [p1[1], p2[1]], pen=DRAWN_LINE_PEN)
-            self.p1.addItem(line)
-
-            label_text = self._format_measurement_label(result, measurement_id)
-            mid_x = (p1[0] + p2[0]) / 2.0
-            mid_y = (p1[1] + p2[1]) / 2.0
-
-            text_item = MeasurementLabel(label_text, anchor=(0, 0), fill=LABEL_BRUSH_COLOR)
-            text_item.setPos(mid_x, mid_y)
-            text_item.sigLabelClicked.connect(self._on_measurement_label_clicked)
-            self.p1.addItem(text_item)
-
-            self.measurement_items.append((line, text_item))
-            self._add_to_measurement_history(label_text)
-            return
-
-        scale_x = float(self.ax_x.scale) if self.ax_x is not None else 1.0
-        scale_y = float(self.ax_y.scale) if self.ax_y is not None else scale_x
-
-        dx_phys = float(p2[0] - p1[0])
-        dy_phys = float(p2[1] - p1[1])
-
-        dist_phys = float(np.hypot(dx_phys, dy_phys))
-
-        if scale_x != 0 and scale_y != 0:
-            dx_px = dx_phys / scale_x
-            dy_px = dy_phys / scale_y
-            dist_px = float(np.hypot(dx_px, dy_px))
-        else:
-            dist_px = 0.0
-
-        result: Dict[str, float] = {
-            "distance_pixels": dist_px,
-            "distance_physical": dist_phys,
-            "scale_x": scale_x,
-            "scale_y": scale_y,
-        }
-
-        if self.is_reciprocal_space and dist_phys != 0:
-            frequency = 1.0 / dist_phys
-            result["d_spacing"] = utils.calculate_d_spacing(frequency)
-
-        line = pg.PlotDataItem([p1[0], p2[0]], [p1[1], p2[1]], pen=DRAWN_LINE_PEN)
-        self.p1.addItem(line)
-
-        label_text = self._format_measurement_label(result, measurement_id)
-        mid_x = (p1[0] + p2[0]) / 2.0
-        mid_y = (p1[1] + p2[1]) / 2.0
-
-        text_item = MeasurementLabel(label_text, anchor=(0, 0), fill=LABEL_BRUSH_COLOR)
-        text_item.setPos(mid_x, mid_y)
-        text_item.sigLabelClicked.connect(self._on_measurement_label_clicked)
-        self.p1.addItem(text_item)
-
-        self.measurement_items.append((line, text_item))
-        self._add_to_measurement_history(label_text)
-        logger.debug(
-            "Measurement #%s: p1=%s p2=%s distance_physical=%.6g distance_pixels=%.6g",
-            measurement_id,
-            p1,
-            p2,
-            dist_phys,
-            dist_px,
-        )
+        self.measurements.on_line_drawn(p1, p2)
 
     def _on_measurement_label_clicked(self, label: pg.TextItem):
-        selected_index = None
-        for idx, (_line_item, text_item) in enumerate(self.measurement_items):
-            if text_item is label:
-                selected_index = idx
-                break
-
-        self.selected_measurement_index = selected_index
-
-        for idx, (_line_item, text_item) in enumerate(self.measurement_items):
-            if idx == selected_index:
-                self._set_label_fill(text_item, pg.mkBrush(255, 200, 0, 255))
-            else:
-                self._set_label_fill(text_item, LABEL_BRUSH_COLOR)
+        self.measurements.on_measurement_label_clicked(label)
 
     def _clear_measurements(self):
-        for line_item, text_item in self.measurement_items:
-            self.p1.removeItem(line_item)
-            self.p1.removeItem(text_item)
-        self.measurement_items.clear()
-        self.selected_measurement_index = None
-
-        if self.measurement_history_window is not None:
-            self.measurement_history_window.clear_all(notify_parent=False)
+        self.measurements.clear_measurements()
 
     def clear_measurements_from_history(self):
-        for line_item, text_item in self.measurement_items:
-            self.p1.removeItem(line_item)
-            self.p1.removeItem(text_item)
-        self.measurement_items.clear()
-        self.selected_measurement_index = None
+        self.measurements.clear_measurements_from_history()
 
     def _delete_selected_measurement(self):
-        if self.selected_measurement_index is None:
-            return
-
-        if not (0 <= self.selected_measurement_index < len(self.measurement_items)):
-            self.selected_measurement_index = None
-            return
-
-        line_item, text_item = self.measurement_items.pop(
-            self.selected_measurement_index
-        )
-        self.p1.removeItem(line_item)
-        self.p1.removeItem(text_item)
-
-        self.selected_measurement_index = None
-        for _line_item, text_item in self.measurement_items:
-            self._set_label_fill(text_item, LABEL_BRUSH_COLOR)
+        self.measurements.delete_selected_measurement()
 
     def _set_label_fill(self, text_item: pg.TextItem, brush: pg.QtGui.QBrush):
-        if hasattr(text_item, "setFill"):
-            text_item.setFill(brush)
-        elif hasattr(text_item, "setBrush"):
-            text_item.setBrush(brush)
+        self.measurements.set_label_fill(text_item, brush)
 
     def delete_measurement_by_label(self, label_text: str):
-        target_index = None
-        for idx, (_line_item, text_item) in enumerate(self.measurement_items):
-            if text_item.toPlainText() == label_text:
-                target_index = idx
-                break
-
-        if target_index is None:
-            return
-
-        self.selected_measurement_index = target_index
-        self._delete_selected_measurement()
+        self.measurements.delete_measurement_by_label(label_text)
 
     def _format_measurement_label(
         self, result: dict, measurement_id: Optional[int] = None
     ) -> str:
-        if self.view_mode == "fft":
-            scaled_dist, scaled_unit = utils.format_reciprocal_scale(
-                result["distance_physical"], self.freq_axis_base_unit
-            )
-            prefix = f"#{measurement_id} " if measurement_id is not None else ""
-            if "d_spacing" in result:
-                return (
-                    f"{prefix}d: {result['d_spacing']:.4f} Å\n"
-                    f"({scaled_dist:.4f} {scaled_unit}⁻¹)"
-                )
-            return (
-                f"{prefix}{scaled_dist:.4f} {scaled_unit}⁻¹\n"
-                f"({result['distance_pixels']:.1f} px)"
-            )
-
-        if self.is_reciprocal_space:
-            scaled_dist, scaled_unit = utils.format_reciprocal_scale(
-                result["distance_physical"], self.ax_x.units
-            )
-        else:
-            scaled_dist, scaled_unit = utils.format_si_scale(
-                result["distance_physical"], self.ax_x.units
-            )
-        prefix = f"#{measurement_id} " if measurement_id is not None else ""
-
-        if self.is_reciprocal_space and "d_spacing" in result:
-            return (
-                f"{prefix}d: {result['d_spacing']:.4f} Å\n"
-                f"({scaled_dist:.4f} {scaled_unit})"
-            )
-        return (
-            f"{prefix}{scaled_dist:.4f} {scaled_unit}\n"
-            f"({result['distance_pixels']:.1f} px)"
-        )
+        return self.measurements.format_measurement_label(result, measurement_id)
 
     def _show_measurement_history(self):
-        if self.measurement_history_window is None:
-            self.measurement_history_window = MeasurementHistoryWindow(self)
-
-        self.measurement_history_window.show()
-        self.measurement_history_window.raise_()
-        self.measurement_history_window.activateWindow()
+        self.measurements.show_measurement_history()
 
     def _add_to_measurement_history(self, measurement_text: str):
-        if self.measurement_history_window is None:
-            self.measurement_history_window = MeasurementHistoryWindow(self)
-
-        self.measurement_history_window.add_measurement(measurement_text)
+        self.measurements.add_to_measurement_history(measurement_text)
 
     # ------------------------------------------------------------------
     # Metadata helpers for export overlays
@@ -1909,147 +1466,3 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.metadata_window.show()
         self.metadata_window.raise_()
         self.metadata_window.activateWindow()
-
-
-class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
-    """Simple fuzzy finder over files in a directory."""
-
-    def __init__(self, parent: Optional[QtWidgets.QWidget], directory: Path):
-        super().__init__(parent)
-        self.directory = directory
-        self._all_files: List[str] = []
-
-        self.setWindowTitle(f"Open File - {directory}")
-        self.resize(500, 400)
-
-        layout = QtWidgets.QVBoxLayout(self)
-
-        self.filter_edit = QtWidgets.QLineEdit(self)
-        self.filter_edit.setPlaceholderText("Type to fuzzy-filter; Enter to open")
-        layout.addWidget(self.filter_edit)
-
-        self.list_widget = QtWidgets.QListWidget(self)
-        layout.addWidget(self.list_widget)
-
-        self.filter_edit.textChanged.connect(self._on_filter_changed)
-        self.filter_edit.returnPressed.connect(self._on_return_pressed)
-        self.list_widget.itemActivated.connect(self._on_item_activated)
-        self.list_widget.itemDoubleClicked.connect(self._on_item_activated)
-
-        self._populate_files()
-
-        if self._all_files:
-            self.list_widget.setCurrentRow(0)
-
-        # Focus the filter line edit when shown
-        QtCore.QTimer.singleShot(0, self.filter_edit.setFocus)
-
-    def _populate_files(self) -> None:
-        # Restrict to common image/signal extensions
-        exts = {
-            ".dm3",
-            ".dm4",
-            ".emi",
-            ".tif",
-            ".tiff",
-            ".mrc",
-            ".ser",
-            ".png",
-            ".jpg",
-            ".jpeg",
-        }
-
-        try:
-            self._all_files = sorted(
-                f.name
-                for f in self.directory.iterdir()
-                if f.is_file() and (not exts or f.suffix.lower() in exts)
-            )
-        except Exception:
-            self._all_files = []
-
-        self._update_list(self._all_files)
-
-    def _update_list(self, names: List[str]) -> None:
-        self.list_widget.clear()
-        self.list_widget.addItems(names)
-
-    @staticmethod
-    def _fuzzy_match(pattern: str, text: str) -> bool:
-        """Simple subsequence-based fuzzy matching."""
-        it = iter(text)
-        return all(ch in it for ch in pattern)
-
-    def _on_filter_changed(self, text: str) -> None:
-        pattern = text.strip().lower()
-        if not pattern:
-            self._update_list(self._all_files)
-            if self._all_files:
-                self.list_widget.setCurrentRow(0)
-            return
-
-        matches = [
-            name
-            for name in self._all_files
-            if self._fuzzy_match(pattern, name.lower())
-        ]
-        self._update_list(matches)
-        if matches:
-            self.list_widget.setCurrentRow(0)
-
-    def _on_return_pressed(self) -> None:
-        current = self.list_widget.currentItem()
-        if current is None and self.list_widget.count() > 0:
-            current = self.list_widget.item(0)
-        if current is not None:
-            self._open_item(current)
-
-    def _on_item_activated(self, item: QtWidgets.QListWidgetItem) -> None:  # type: ignore[override]
-        self._open_item(item)
-
-    def _open_item(self, item: QtWidgets.QListWidgetItem) -> None:
-        name = item.text()
-        path = self.directory / name
-        if path.is_file():
-            open_image_file(str(path))
-        self.accept()
-
-
-def open_image_file(file_path: str):
-    """Open an image file; if it contains multiple images, open one window per image."""
-    try:
-        logger.debug("Opening image file: %s", file_path)
-        loaded = hs.load(file_path)
-
-        signals = loaded if isinstance(loaded, list) else [loaded]
-        logger.debug("Loaded %d signal(s) from %s", len(signals), file_path)
-
-        for sig_index, signal in enumerate(signals):
-            if signal.axes_manager.navigation_dimension == 0:
-                suffix = f"[{sig_index}]" if len(signals) > 1 else None
-                window = ImageViewerWindow(file_path, signal=signal, window_suffix=suffix)
-                window.show()
-                logger.debug("Opened viewer for signal index %s suffix=%s", sig_index, suffix)
-            else:
-                nav_shape = signal.axes_manager.navigation_shape
-                for nav_index in np.ndindex(nav_shape):
-                    sub_signal = signal.inav[nav_index]
-                    idx_str = ",".join(str(i) for i in nav_index)
-                    if len(signals) > 1:
-                        suffix = f"[{sig_index}; {idx_str}]"
-                    else:
-                        suffix = f"[{idx_str}]"
-                    window = ImageViewerWindow(
-                        file_path, signal=sub_signal, window_suffix=suffix
-                    )
-                    window.show()
-                    logger.debug(
-                        "Opened viewer for signal index %s navigation index %s suffix=%s",
-                        sig_index,
-                        nav_index,
-                        suffix,
-                    )
-
-    except Exception as e:
-        logger.exception("Could not open file: %s", file_path)
-        QtWidgets.QMessageBox.critical(None, "Error", f"Could not open file: {str(e)}")

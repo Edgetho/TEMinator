@@ -6,11 +6,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import List
 from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+
+from file_navigation import IMAGE_EXTENSIONS
 
 
 class MeasurementHistoryWindow(QtWidgets.QMainWindow):
@@ -530,3 +534,95 @@ class ToneCurveDialog(QtWidgets.QDialog):
         self.max_val = self.data_max
         self.gamma = 1.0
         self._update_all()
+
+
+class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
+    """Simple fuzzy finder over files in a directory."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget], directory: Path):
+        super().__init__(parent)
+        self.directory = directory
+        self._all_files: List[str] = []
+
+        self.setWindowTitle(f"Open File - {directory}")
+        self.resize(500, 400)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self.filter_edit = QtWidgets.QLineEdit(self)
+        self.filter_edit.setPlaceholderText("Type to fuzzy-filter; Enter to open")
+        layout.addWidget(self.filter_edit)
+
+        self.list_widget = QtWidgets.QListWidget(self)
+        layout.addWidget(self.list_widget)
+
+        self.filter_edit.textChanged.connect(self._on_filter_changed)
+        self.filter_edit.returnPressed.connect(self._on_return_pressed)
+        self.list_widget.itemActivated.connect(self._on_item_activated)
+        self.list_widget.itemDoubleClicked.connect(self._on_item_activated)
+
+        self._populate_files()
+
+        if self._all_files:
+            self.list_widget.setCurrentRow(0)
+
+        QtCore.QTimer.singleShot(0, self.filter_edit.setFocus)
+
+    def _populate_files(self) -> None:
+        try:
+            self._all_files = sorted(
+                f.name
+                for f in self.directory.iterdir()
+                if f.is_file() and (not IMAGE_EXTENSIONS or f.suffix.lower() in IMAGE_EXTENSIONS)
+            )
+        except Exception:
+            self._all_files = []
+
+        self._update_list(self._all_files)
+
+    def _update_list(self, names: List[str]) -> None:
+        self.list_widget.clear()
+        self.list_widget.addItems(names)
+
+    @staticmethod
+    def _fuzzy_match(pattern: str, text: str) -> bool:
+        """Simple subsequence-based fuzzy matching."""
+
+        it = iter(text)
+        return all(ch in it for ch in pattern)
+
+    def _on_filter_changed(self, text: str) -> None:
+        pattern = text.strip().lower()
+        if not pattern:
+            self._update_list(self._all_files)
+            if self._all_files:
+                self.list_widget.setCurrentRow(0)
+            return
+
+        matches = [
+            name
+            for name in self._all_files
+            if self._fuzzy_match(pattern, name.lower())
+        ]
+        self._update_list(matches)
+        if matches:
+            self.list_widget.setCurrentRow(0)
+
+    def _on_return_pressed(self) -> None:
+        current = self.list_widget.currentItem()
+        if current is None and self.list_widget.count() > 0:
+            current = self.list_widget.item(0)
+        if current is not None:
+            self._open_item(current)
+
+    def _on_item_activated(self, item: QtWidgets.QListWidgetItem) -> None:  # type: ignore[override]
+        self._open_item(item)
+
+    def _open_item(self, item: QtWidgets.QListWidgetItem) -> None:
+        from image_loader import open_image_file
+
+        name = item.text()
+        path = self.directory / name
+        if path.is_file():
+            open_image_file(str(path))
+        self.accept()
