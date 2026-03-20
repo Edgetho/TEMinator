@@ -985,7 +985,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         act_calibrate_image.triggered.connect(self._open_calibration_dialog)
 
         act_parameters = file_menu.addAction("Parameters")
-        act_parameters.triggered.connect(self._show_not_implemented("Parameters"))
+        act_parameters.triggered.connect(lambda: self._show_not_implemented("Parameters"))
 
         manipulate_menu = menu_bar.addMenu("Manipulate")
         act_fft = manipulate_menu.addAction("FFT")
