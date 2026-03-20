@@ -4,6 +4,7 @@ from typing import Tuple
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+from typing import Tuple, Optional
 
 import utils
 
@@ -106,6 +107,11 @@ class DynamicScaleBar(pg.GraphicsObject):
     - Drawn as an overlay (ignores data transforms), so text size is
       stable while the bar length and label update with zoom.
     """
+
+    _length_px = 0.0
+    _label_text = ""
+    _rect = QtCore.QRectF()
+    _extra_label: Optional[str] = None
 
     def __init__(
         self,
@@ -250,18 +256,20 @@ class DynamicScaleBar(pg.GraphicsObject):
             return
 
         p.setPen(QtGui.QPen(QtCore.Qt.red, 2))
-        cap = 5
-        p.drawLine(0, 0, self._length_px, 0)
-        p.drawLine(0, -cap, 0, cap)
-        p.drawLine(self._length_px, -cap, self._length_px, cap)
+        cap = 5.0
+        length = float(self._length_px)
+
+        p.drawLine(QtCore.QLineF(0, 0, self._length_px, 0))
+        p.drawLine(QtCore.QLineF(0, -cap, 0, cap))
+        p.drawLine(QtCore.QLineF(self._length_px, -cap, self._length_px, cap))
 
         p.setPen(QtGui.QPen(QtCore.Qt.red))
         font = QtGui.QFont()
         font.setPointSize(8)
         p.setFont(font)
-        p.drawText(0, -cap - 3, self._label_text)
+        p.drawText(0, -int(cap) - 3, self._label_text)
 
         # Optional extra label (e.g. file name and ROI number) drawn above
         # the standard scale-bar label. Kept in the same red color.
         if self._extra_label:
-            p.drawText(0, -cap - 3 - 12, self._extra_label)
+            p.drawText(0, -int(cap) - 3 - 12, self._extra_label)

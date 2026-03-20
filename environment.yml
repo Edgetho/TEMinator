@@ -1,9 +1,9 @@
-name: fft-image-analyzer
+name: teminator
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
-  - numpy
+  - python=3.14.*
+  - numpy>=2.0
   - pyqtgraph
-  - pyqt
+  - pyqt=5.15.*
   - hyperspy
