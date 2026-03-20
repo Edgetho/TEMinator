@@ -1,4 +1,8 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Cooper Stuntz
+# See LICENSE for full license terms.
+
 # Run the TEM Companion app from the command line. This is a convenient way to
 # ensure temcompanion runs in the environment defined by environment.yml.
 

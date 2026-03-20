@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Cooper Stuntz
+# See LICENSE for full license terms.
+
 """FFT viewer window for a selected ROI."""
 from __future__ import annotations
 

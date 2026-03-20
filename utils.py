@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Cooper Stuntz
+# See LICENSE for full license terms.
+
 """Utility functions for FFT, measurements, and image analysis."""
 import numpy as np
 from typing import Tuple, Optional

@@ -1,41 +1,62 @@
-Fast FFT Image Analyzer
+TEMcompanion
 =======================
 
 Desktop viewer for electron microscopy and related scientific images with fast, interactive FFT analysis, distance measurements, and metadata-aware scaling.
 
 The application is built with PyQt / pyqtgraph and HyperSpy and is intended for quick inspection of both real‑space images and diffraction patterns.
 
+Warning: This application is under very active development and will break. If you have ideas to fix things, please submit a PR.
+
 ---
 
 Getting started
 ---------------
 
-### 1. Install dependencies (recommended: conda)
+### 1. Install dependencies
 
-From the project root:
+From the project root, create the conda/mamba environment defined in `environment.yml`:
+
+```bash
+mamba env create -f environment.yml
+```
+
+or:
 
 ```bash
 conda env create -f environment.yml
-conda activate fft-image-analyzer
 ```
 
-This creates an environment with Python 3.9, NumPy, pyqtgraph, PyQt, and HyperSpy.
+This creates the `teminator` environment with Python 3.14, NumPy, pyqtgraph, PyQt 5.15, and HyperSpy.
 
-If you prefer `pip`, install the same packages manually:
-
-```bash
-pip install numpy pyqtgraph pyqt5 hyperspy
-```
+If you prefer to use either`pip` or `venv` instead, install the packages listed in `environment.yml` manually.
 
 ### 2. Run the application
 
-From the project root:
+From the project root, run:
 
 ```bash
-python main.py
+./teminator
+```
+
+The launcher will:
+- detect the environment name from `environment.yml`
+- use `mamba run` (or `conda run`) to execute `app.py`
+- forward any additional arguments to the app
+
+Examples:
+
+```bash
+./teminator --help
+./teminator /path/to/image.dm4
 ```
 
 On startup you will see a small main window with drag‑and‑drop instructions.
+
+If you already have a compatible Python environment active, you can also run directly:
+
+```bash
+python app.py
+```
 
 ---
 
@@ -122,9 +143,14 @@ Architecture overview
 
 Source layout:
 
-- `app.py` – all Qt windows, widgets, and interaction logic (main window, image viewer, FFT viewer, tools).
+- `app.py` – app entrypoint and main drag-and-drop window.
+- `image_viewer.py` – `ImageViewerWindow` and image loading/opening helpers.
+- `fft_viewer.py` – `FFTViewerWindow` for ROI FFT views.
+- `dialogs.py` – metadata/history/tone-curve dialogs.
+- `measurement_tools.py` – line drawing tools, measurement labels, FFT ROI item classes.
+- `scale_bars.py` – dynamic and static scale bar graphics.
 - `utils.py` – numerical helpers for FFTs, line measurements, SI‑scaled units, and diffraction‑pattern detection.
-- `main.py` – thin entry point that imports and runs `app.main()`.
+- `teminator` – launcher script for conda/mamba-based startup.
 - `environment.yml` – conda environment definition.
 
 At runtime:
@@ -133,8 +159,6 @@ At runtime:
 - Each **ImageViewerWindow** owns its FFT boxes, measurement graphics, optional measurement history window, and metadata window.
 - Each FFT box is a `pyqtgraph.RectROI` subclass wired to an **FFTViewerWindow** that displays and caches FFT results.
 - Low‑level NumPy/FFT utilities live in `utils.py` and are shared between viewers.
-
-For a detailed per‑class and per‑function description, see the separate technical document: `TECHNICAL_DOCUMENTATION.md`.
 
 ---
 
@@ -145,17 +169,22 @@ Troubleshooting
 - **FFT window is blank** – ensure the FFT box covers at least a 2×2 region of the image.
 - **Measurements show “inf” d‑spacing** – this occurs when the measured reciprocal‑space distance is numerically zero; try measuring a larger feature.
 - **Calibration warning** – if metadata does not contain usable pixel size information, the viewer falls back to unit‑per‑pixel scaling and shows a warning dialog.
+- **Linux OpenGL warning at startup** – some systems without GLX/EGL support may print a Qt warning and then continue in software mode.
 
 ---
 
 Development notes
 -----------------
 
-- The project targets Python 3.9 and PyQt via `pyqtgraph.Qt` for flexibility across Qt bindings.
+- The project targets Python 3.14 and PyQt via `pyqtgraph.Qt` for flexibility across Qt bindings.
 - HyperSpy is used only for I/O and metadata; image display and interaction is handled entirely by pyqtgraph.
 - GUI classes are kept in a single module for ease of navigation; numerical work is confined to `utils.py`.
 
 License and citation
 --------------------
 
-Please refer to the repository for licensing details. If you use this tool in scientific work, consider acknowledging it as “Fast FFT Image Analyzer (image_app)” in your methods or acknowledgements section.
+Copyright (C) 2026 Cooper Stuntz, email: [cstuntz@princeton.edu](mailto:cstuntz@princeton.edu).
+
+Code included in this repository is licensed under the GNU General Public License, version 2. The full license text is provided in `LICENSE`. Licenses for dependencies may differ; consult each dependency's license as needed.
+
+If you use this tool in scientific work, consider acknowledging it as TEMinator and the authors in your methods or acknowledgements section.

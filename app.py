@@ -1,3 +1,18 @@
+# TEMinator
+# Copyright (C) 2026 Cooper Stuntz
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; version 2 of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
 """Application entrypoint and main window wiring.
 
 This module provides the top-level ``main`` function and the
@@ -51,10 +66,18 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(central)
 
         label = QtWidgets.QLabel(
-            "Drag and drop an image file here to open it\n"
-            "(Supports DM3, DM4, TIFF, and other HyperSpy formats)"
+            "<div style='text-align:center;'>"
+            "<p style='margin:0;'>Drag and drop an image file here to open it.</p>"
+            "<p style='margin:6px 0 12px 0;'>(Supports DM3, DM4, TIFF, and other HyperSpy formats)</p>"
+            "<p style='margin:6px;'> Provided without warranty under the GNU GPLv2.<.</p>"
+            "<p style='margin:6px 0 0 0;'>Source: "
+            "<a href='https://github.com/Edgetho/TEMinator'>github.com/Edgetho/TEMinator</a></p>"
+            "<p style='margin:6px 0 0 0;'>&copy; 2026 Cooper Stuntz</p>"
+            "</div>"
         )
         label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setTextFormat(QtCore.Qt.RichText)
+        label.setOpenExternalLinks(True)
         label.setStyleSheet("font-size: 16px; color: #666;")
         layout.addStretch()
         layout.addWidget(label)
