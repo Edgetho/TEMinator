@@ -34,7 +34,7 @@ Examples:
 Notes:
   - All non-launcher arguments are forwarded to app.py.
   - On Linux, the launcher also applies Qt env guards to avoid mixed
-    system/conda plugin ABI issues.
+    system/conda plugin ABI issues and prefers Wayland/OpenGL when available.
 EOF
 }
 
@@ -98,6 +98,29 @@ if ! "$PKG_MGR" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
   exit 1
 fi
 
+qt_wayland_platform_available() {
+  "$PKG_MGR" run -n "$ENV_NAME" python - <<'PY' >/dev/null 2>&1
+from pathlib import Path
+
+try:
+  from PyQt5 import QtCore
+except Exception:
+  raise SystemExit(1)
+
+plugins_path = Path(QtCore.QLibraryInfo.location(QtCore.QLibraryInfo.PluginsPath))
+platform_dir = plugins_path / "platforms"
+if not platform_dir.is_dir():
+  raise SystemExit(1)
+
+for candidate in platform_dir.iterdir():
+  name = candidate.name.lower()
+  if "wayland" in name and candidate.is_file():
+    raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
 # Build one launch command (avoids duplicated Linux/non-Linux exec blocks).
 set -- "$PKG_MGR" run -n "$ENV_NAME" env \
   -u QT_PLUGIN_PATH \
@@ -105,10 +128,21 @@ set -- "$PKG_MGR" run -n "$ENV_NAME" env \
   -u QML2_IMPORT_PATH
 
 if [[ "$(uname -s)" == "Linux" ]]; then
+  # Prefer Wayland first (when the session is Wayland) but keep xcb fallback.
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    if qt_wayland_platform_available; then
+      QT_PLATFORM_DEFAULT="wayland;xcb"
+    else
+      QT_PLATFORM_DEFAULT="xcb"
+    fi
+  else
+    QT_PLATFORM_DEFAULT="xcb"
+  fi
+
   set -- "$@" \
-    QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}" \
-    QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-none}" \
-    QT_OPENGL="${QT_OPENGL:-software}"
+    QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-$QT_PLATFORM_DEFAULT}" \
+    QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-xcb_egl}" \
+    QT_OPENGL="${QT_OPENGL:-desktop}"
 fi
 
 if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then

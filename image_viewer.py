@@ -22,6 +22,7 @@ from dialogs import (
     LineProfileWindow,
     MetadataWindow,
     ToneCurveDialog,
+    RenderSettingsDialog,
 )
 from file_navigation import IMAGE_FILE_FILTER
 from image_loader import open_image_file
@@ -37,6 +38,15 @@ from viewer_fft import FFTWindowManager
 from viewer_measurements import MeasurementController
 from viewer_commands import (
     ViewerCommandRouter,
+)
+from viewer_settings import (
+    RESAMPLING_FAST,
+    RESAMPLING_BALANCED,
+    RESAMPLING_HIGH,
+    load_render_settings,
+    save_render_settings,
+    global_render_config_options,
+    hardware_acceleration_available,
 )
 
 
@@ -127,6 +137,10 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._calibration_dialog_state: Optional[Dict[str, Any]] = None
         self._on_calibration_pixels_selected: Optional[Callable[[float], None]] = None
         self._base_window_title: str = ""
+        self._render_settings: Dict[str, Any] = load_render_settings()
+        self._mipmap_levels: List[np.ndarray] = []
+        self._current_mipmap_level: int = -1
+        self._display_image_full_res: Optional[np.ndarray] = None
         self.measurements = MeasurementController(self, logger)
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
         self.commands = ViewerCommandRouter(self, logger)
@@ -897,6 +911,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.img_orig = pg.ImageItem(axisOrder="row-major")
         self.p1.addItem(self.img_orig)
+        self._apply_render_preferences_to_view()
         self.p1.invertY(True)
         if self.view_mode == "fft":
             cmap = pg.colormap.get("magma")
@@ -949,7 +964,121 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self._on_measurement_drawing_state_changed,
         )
 
+        if hasattr(self.p1, "vb") and hasattr(self.p1.vb, "sigRangeChanged"):
+            self.p1.vb.sigRangeChanged.connect(self._on_view_range_changed)
+
         self.setup_keyboard_shortcuts()
+
+    def _render_quality_mode(self) -> str:
+        return str(self._render_settings.get("image_resampling_quality", RESAMPLING_HIGH)).strip().lower()
+
+    def _apply_render_preferences_to_view(self) -> None:
+        if self.img_orig is None or self.glw is None:
+            return
+
+        quality = self._render_quality_mode()
+        auto_downsample = quality in {RESAMPLING_BALANCED, RESAMPLING_HIGH}
+        smooth = quality in {RESAMPLING_BALANCED, RESAMPLING_HIGH}
+
+        if hasattr(self.img_orig, "setAutoDownsample"):
+            self.img_orig.setAutoDownsample(auto_downsample)
+
+        if hasattr(self.glw, "setRenderHint"):
+            self.glw.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, smooth)
+
+        logger.debug(
+            "Applied render preferences: quality=%s auto_downsample=%s smooth_transform=%s",
+            quality,
+            auto_downsample,
+            smooth,
+        )
+
+    @staticmethod
+    def _downsample_by_2_mean(image: np.ndarray) -> Optional[np.ndarray]:
+        if image.ndim != 2:
+            return None
+
+        src = np.asarray(image, dtype=np.float32)
+        h, w = src.shape
+        h2 = (h // 2) * 2
+        w2 = (w // 2) * 2
+        if h2 < 2 or w2 < 2:
+            return None
+
+        view = src[:h2, :w2]
+        return view.reshape(h2 // 2, 2, w2 // 2, 2).mean(axis=(1, 3), dtype=np.float32)
+
+    def _build_mipmap_levels(self, image: np.ndarray) -> None:
+        self._mipmap_levels = []
+        base = np.asarray(image, dtype=np.float32)
+        self._mipmap_levels.append(base)
+
+        while len(self._mipmap_levels) < 9:
+            nxt = self._downsample_by_2_mean(self._mipmap_levels[-1])
+            if nxt is None:
+                break
+            self._mipmap_levels.append(nxt)
+
+        self._current_mipmap_level = -1
+
+    def _compute_target_mipmap_level(self) -> int:
+        if not self._mipmap_levels or self.p1 is None or self.img_orig is None:
+            return 0
+
+        try:
+            rect = self.img_orig.rect()
+            rect_w = float(rect.width())
+            rect_h = float(rect.height())
+            if rect_w <= 0 or rect_h <= 0:
+                return 0
+
+            vr = self.p1.vb.viewRange()
+            x0, x1 = float(vr[0][0]), float(vr[0][1])
+            y0, y1 = float(vr[1][0]), float(vr[1][1])
+
+            visible_cols = abs((x1 - x0) / rect_w) * float(self._mipmap_levels[0].shape[1])
+            visible_rows = abs((y1 - y0) / rect_h) * float(self._mipmap_levels[0].shape[0])
+
+            view_px_w = max(float(self.p1.vb.width()), 1.0)
+            view_px_h = max(float(self.p1.vb.height()), 1.0)
+
+            src_per_screen = max(visible_cols / view_px_w, visible_rows / view_px_h, 1.0)
+            level = int(np.floor(np.log2(src_per_screen)))
+        except Exception:
+            return 0
+
+        return max(0, min(level, len(self._mipmap_levels) - 1))
+
+    def _set_display_image(self, image: np.ndarray) -> None:
+        if self.img_orig is None:
+            return
+
+        self._display_image_full_res = np.asarray(image, dtype=np.float32)
+        quality = self._render_quality_mode()
+
+        if quality == RESAMPLING_HIGH:
+            self._build_mipmap_levels(self._display_image_full_res)
+            self._on_view_range_changed(force=True)
+            return
+
+        self._mipmap_levels = []
+        self._current_mipmap_level = -1
+        self.img_orig.setImage(self._display_image_full_res, autoLevels=False, levels=(0.0, 1.0))
+
+    def _on_view_range_changed(self, *_args, force: bool = False) -> None:
+        if self.img_orig is None:
+            return
+        if self._render_quality_mode() != RESAMPLING_HIGH:
+            return
+        if not self._mipmap_levels:
+            return
+
+        level = self._compute_target_mipmap_level()
+        if not force and level == self._current_mipmap_level:
+            return
+
+        self._current_mipmap_level = level
+        self.img_orig.setImage(self._mipmap_levels[level], autoLevels=False, levels=(0.0, 1.0))
 
     def _update_image_display(self):
         if self.data is None or self.img_orig is None:
@@ -979,7 +1108,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             if adjusted is None:
                 return
 
-            self.img_orig.setImage(adjusted, autoLevels=False, levels=(0.0, 1.0))
+            self._set_display_image(adjusted)
             if self._nyq_x is not None and self._nyq_y is not None:
                 self.img_orig.setRect(
                     QtCore.QRectF(-self._nyq_x, -self._nyq_y, 2 * self._nyq_x, 2 * self._nyq_y)
@@ -1001,7 +1130,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if adjusted is None:
             return
 
-        self.img_orig.setImage(adjusted, autoLevels=False, levels=(0.0, 1.0))
+        self._set_display_image(adjusted)
 
     def _apply_colormap(self) -> None:
         """Apply the currently selected colormap to the main image."""
@@ -1235,7 +1364,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         act_calibrate_image.triggered.connect(self._open_calibration_dialog)
 
         act_parameters = file_menu.addAction("Parameters")
-        act_parameters.triggered.connect(lambda: self._show_not_implemented("Parameters"))
+        act_parameters.triggered.connect(self._open_parameters_dialog)
 
         manipulate_menu = menu_bar.addMenu("Manipulate")
         act_fft = manipulate_menu.addAction("FFT")
@@ -1275,6 +1404,40 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
+
+    def _open_parameters_dialog(self) -> None:
+        current = load_render_settings()
+        dialog = RenderSettingsDialog(self, current=current)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        updated = dialog.selected_settings()
+        save_render_settings(updated)
+
+        previous_hw = bool(current.get("use_hardware_acceleration", True))
+        updated_hw = bool(updated.get("use_hardware_acceleration", True))
+        gl_available = hardware_acceleration_available()
+
+        self._render_settings = updated
+        pg.setConfigOptions(
+            **global_render_config_options(updated, hardware_available=gl_available)
+        )
+        self._apply_render_preferences_to_view()
+        self._update_image_display()
+
+        if updated_hw and not gl_available:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Parameters",
+                "Hardware acceleration is enabled in settings, but no OpenGL context is available on this system/session. "
+                "This window will use non-OpenGL rendering until hardware OpenGL becomes available.",
+            )
+        elif previous_hw != updated_hw:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Parameters",
+                "Hardware acceleration backend change will apply fully to newly opened windows.",
+            )
 
     def _open_file_dialog(self) -> None:
         start_dir = str(Path(self.file_path).parent) if self.file_path else str(Path.cwd())

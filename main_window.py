@@ -8,15 +8,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 from command_utils import enter_command_mode, exit_command_mode, parse_command_input
-from dialogs import DirectoryFuzzyOpenDialog
+from dialogs import DirectoryFuzzyOpenDialog, RenderSettingsDialog
 from file_navigation import (
     IMAGE_FILE_FILTER,
 )
 from image_loader import open_image_file
 from main_window_commands import MainWindowCommandRouter
+from viewer_settings import (
+    load_render_settings,
+    save_render_settings,
+    global_render_config_options,
+    hardware_acceleration_available,
+)
 
 
 DEFAULT_MAIN_WINDOW_SIZE = (600, 400)
@@ -32,9 +39,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setAcceptDrops(True)
 
         self.command_edit: QtWidgets.QLineEdit | None = None
+        self._render_settings = load_render_settings()
         self.commands = MainWindowCommandRouter(self)
 
         self._setup_ui()
+        self._update_render_status_indicator()
 
         app = QtWidgets.QApplication.instance()
         if app is not None:
@@ -84,7 +93,8 @@ class MainWindow(QtWidgets.QMainWindow):
         act_save_view = file_menu.addAction("Save View", lambda: self._show_not_implemented("Save View"))
         act_build_figure = file_menu.addAction("Build Figure", lambda: self._show_not_implemented("Build Figure"))
         act_calibrate_image = file_menu.addAction("Calibrate Image", lambda: self._show_not_implemented("Calibrate Image"))
-        act_parameters = file_menu.addAction("Parameters", lambda: self._show_not_implemented("Parameters"))
+        act_parameters = file_menu.addAction("Parameters")
+        act_parameters.triggered.connect(self._open_parameters_dialog)
 
         manipulate_menu = menu_bar.addMenu("Manipulate")
         act_fft = manipulate_menu.addAction("FFT", lambda: self._show_not_implemented("FFT"))
@@ -124,6 +134,52 @@ class MainWindow(QtWidgets.QMainWindow):
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
+
+    def _render_status_text(self) -> str:
+        quality = str(self._render_settings.get("image_resampling_quality", "high")).strip().lower()
+        requested_hw = bool(self._render_settings.get("use_hardware_acceleration", True))
+        available_hw = hardware_acceleration_available()
+
+        if requested_hw and available_hw:
+            backend = "OpenGL"
+        elif requested_hw and not available_hw:
+            backend = "Raster (OpenGL unavailable)"
+        else:
+            backend = "Raster (OpenGL disabled)"
+
+        return f"Graphics settings loaded: backend={backend}, resampling={quality}"
+
+    def _update_render_status_indicator(self) -> None:
+        self.statusBar().showMessage(self._render_status_text())
+
+    def _open_parameters_dialog(self) -> None:
+        current = load_render_settings()
+        dialog = RenderSettingsDialog(self, current=current)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        updated = dialog.selected_settings()
+        save_render_settings(updated)
+        gl_available = hardware_acceleration_available()
+        pg.setConfigOptions(
+            **global_render_config_options(updated, hardware_available=gl_available)
+        )
+        self._render_settings = updated
+        self._update_render_status_indicator()
+
+        if bool(updated.get("use_hardware_acceleration", True)) and not gl_available:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Parameters",
+                "Hardware acceleration is enabled in settings, but no OpenGL context is available on this system/session. "
+                "The viewer will use non-OpenGL rendering until hardware OpenGL becomes available.",
+            )
+        elif bool(current.get("use_hardware_acceleration", True)) != bool(updated.get("use_hardware_acceleration", True)):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Parameters",
+                "Hardware acceleration backend change will apply fully to newly opened windows.",
+            )
 
     def _open_file_dialog(self) -> None:
         selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(

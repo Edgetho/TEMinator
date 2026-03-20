@@ -20,9 +20,15 @@ import logging
 import sys
 from pathlib import Path
 
+import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtGui
 
 from main_window import MainWindow
+from viewer_settings import (
+    load_render_settings,
+    global_render_config_options,
+    hardware_acceleration_available,
+)
 
 
 def _parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -60,6 +66,20 @@ def main() -> None:
     logger.debug("Qt passthrough args: %s", qt_args)
 
     app = QtWidgets.QApplication([sys.argv[0], *qt_args])
+    app.setOrganizationName("TEMinator")
+    app.setApplicationName("TEMinator")
+
+    settings = load_render_settings()
+    gl_available = hardware_acceleration_available()
+    pg.setConfigOptions(
+        **global_render_config_options(settings, hardware_available=gl_available)
+    )
+
+    if bool(settings.get("use_hardware_acceleration", True)) and not gl_available:
+        logger.warning(
+            "Hardware acceleration was requested but no OpenGL context is available; "
+            "falling back to non-OpenGL rendering."
+        )
 
     icon_path = Path(__file__).with_name("app_icon.png")
     if icon_path.is_file():

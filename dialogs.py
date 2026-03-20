@@ -17,6 +17,12 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 from file_navigation import IMAGE_EXTENSIONS
+from viewer_settings import (
+    RESAMPLING_FAST,
+    RESAMPLING_BALANCED,
+    RESAMPLING_HIGH,
+    RenderSettings,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -837,3 +843,51 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
         if path.is_file():
             open_image_file(str(path))
         self.accept()
+
+
+class RenderSettingsDialog(QtWidgets.QDialog):
+    """Dialog for display quality/performance rendering settings."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget], current: RenderSettings):
+        super().__init__(parent)
+        self.setWindowTitle("Parameters")
+        self.resize(520, 220)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        self.chk_hardware = QtWidgets.QCheckBox("Use hardware acceleration (OpenGL)")
+        self.chk_hardware.setChecked(bool(current.get("use_hardware_acceleration", True)))
+        form.addRow("Rendering backend:", self.chk_hardware)
+
+        self.cmb_quality = QtWidgets.QComboBox()
+        self.cmb_quality.addItem("Fast (nearest-neighbor)", RESAMPLING_FAST)
+        self.cmb_quality.addItem("Balanced (linear + downsample)", RESAMPLING_BALANCED)
+        self.cmb_quality.addItem("High quality (mipmap anti-aliasing)", RESAMPLING_HIGH)
+
+        quality = str(current.get("image_resampling_quality", RESAMPLING_HIGH)).strip().lower()
+        index = max(0, self.cmb_quality.findData(quality))
+        self.cmb_quality.setCurrentIndex(index)
+        form.addRow("Image resampling:", self.cmb_quality)
+
+        description = QtWidgets.QLabel(
+            "High quality uses a multiscale area-averaged image pyramid to avoid aliasing while maintaining hardware-accelerated display."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_settings(self) -> RenderSettings:
+        return {
+            "use_hardware_acceleration": self.chk_hardware.isChecked(),
+            "image_resampling_quality": str(self.cmb_quality.currentData() or RESAMPLING_HIGH),
+        }
