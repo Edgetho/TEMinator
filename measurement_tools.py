@@ -15,9 +15,9 @@ Signal = getattr(QtCore, "pyqtSignal", getattr(QtCore, "Signal", None))
 logger = logging.getLogger(__name__)
 
 # Pens and brushes used for measurement drawing
-PREVIEW_LINE_PEN = pg.mkPen('y', width=2, style=QtCore.Qt.DashLine)
-DRAWN_LINE_PEN = pg.mkPen('w', width=2)
-LABEL_BRUSH_COLOR = pg.mkBrush(255, 255, 100, 220)  # Yellow background
+PREVIEW_LINE_PEN = pg.mkPen(255, 165, 0, width=2, style=QtCore.Qt.DashLine)
+DRAWN_LINE_PEN = pg.mkPen(0, 255, 255, width=2)
+LABEL_BRUSH_COLOR = pg.mkBrush(240, 240, 255, 235)
 
 
 class LineDrawingTool:

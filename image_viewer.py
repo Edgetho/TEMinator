@@ -19,6 +19,7 @@ import unit_utils
 from command_utils import enter_command_mode, exit_command_mode, parse_command_input
 from dialogs import (
     MeasurementHistoryWindow,
+    LineProfileWindow,
     MetadataWindow,
     ToneCurveDialog,
 )
@@ -81,8 +82,10 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.measurement_history_window: Optional[MeasurementHistoryWindow] = None
         self.metadata_window: Optional[MetadataWindow] = None
         self.measurement_count = 0
+        self.profile_measurement_count = 0
         self.btn_measure: Optional[QtWidgets.QPushButton] = None
-        self.measurement_items: List[Tuple[pg.PlotDataItem, pg.TextItem]] = []
+        self.measurement_items: List[Tuple[int, pg.PlotDataItem, pg.TextItem]] = []
+        self.profile_measurement_items: Dict[int, Dict[str, Any]] = {}
         self.selected_measurement_index: Optional[int] = None
 
         # Colormap state for the main image view
@@ -189,6 +192,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         calibrated = self._apply_calibration_from_original_metadata()
         if not calibrated:
             self._calibration_status = "uncalibrated"
+            logger.debug("Startup metadata calibration failed; entering uncalibrated mode")
             QtWidgets.QMessageBox.warning(
                 self,
                 "Calibration",
@@ -197,6 +201,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
         else:
             self._calibration_status = "metadata"
+            logger.debug("Startup metadata calibration applied successfully")
 
         # Decide whether this view should be treated as reciprocal space.
         # Prefer explicit metadata / axis units when available so that
@@ -251,15 +256,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.resize(*DEFAULT_FFT_WINDOW_SIZE)
 
     def _get_original_metadata_dict(self) -> Optional[dict]:
-        if self.signal is None:
+        return self._get_original_metadata_dict_from_signal(self.signal)
+
+    def _get_original_metadata_dict_from_signal(self, signal) -> Optional[dict]:
+        if signal is None:
             return None
 
         original_meta = None
 
-        if hasattr(self.signal, "original_metadata"):
-            original_meta = self.signal.original_metadata
-        elif hasattr(self.signal.metadata, "original_metadata"):
-            original_meta = self.signal.metadata.original_metadata
+        if hasattr(signal, "original_metadata"):
+            original_meta = signal.original_metadata
+        elif hasattr(signal.metadata, "original_metadata"):
+            original_meta = signal.metadata.original_metadata
 
         if original_meta is None:
             return None
@@ -272,11 +280,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         except Exception:
             return None
 
-    def _apply_calibration_from_original_metadata(self) -> bool:
-        meta = self._get_original_metadata_dict()
-        if not meta:
-            return False
-
+    def _extract_ser_calibration(self, meta: dict) -> Optional[Tuple[float, float, Optional[float], Optional[float]]]:
         ser_params = None
         if "ser_header_parameters" in meta:
             ser_params = meta["ser_header_parameters"]
@@ -287,32 +291,102 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                     break
 
         if not isinstance(ser_params, dict):
-            return False
+            logger.debug("Calibration metadata missing ser_header_parameters")
+            return None
 
         dx = ser_params.get("CalibrationDeltaX")
         dy = ser_params.get("CalibrationDeltaY")
-
         if not (isinstance(dx, (int, float)) and isinstance(dy, (int, float))):
-            return False
+            logger.debug("Calibration metadata has invalid deltas: dx=%r dy=%r", dx, dy)
+            return None
         if dx <= 0 or dy <= 0:
+            logger.debug("Calibration metadata deltas must be positive: dx=%r dy=%r", dx, dy)
+            return None
+
+        ox = ser_params.get("CalibrationOffsetX")
+        oy = ser_params.get("CalibrationOffsetY")
+        out_ox = float(ox) if isinstance(ox, (int, float)) else None
+        out_oy = float(oy) if isinstance(oy, (int, float)) else None
+
+        return float(dx), float(dy), out_ox, out_oy
+
+    def _apply_axis_calibration_values(
+        self,
+        dx: float,
+        dy: float,
+        units: str,
+        ox: Optional[float] = None,
+        oy: Optional[float] = None,
+        source: str = "unknown",
+    ) -> bool:
+        if self.ax_x is None or self.ax_y is None:
+            logger.debug("Skipping axis calibration apply (%s): axes unavailable", source)
             return False
 
         try:
             self.ax_x.scale = float(dx)
             self.ax_y.scale = float(dy)
-            self.ax_x.units = "m"
-            self.ax_y.units = "m"
+            self.ax_x.units = units
+            self.ax_y.units = units
 
-            ox = ser_params.get("CalibrationOffsetX")
-            oy = ser_params.get("CalibrationOffsetY")
-            if isinstance(ox, (int, float)):
+            if ox is not None:
                 self.ax_x.offset = float(ox)
-            if isinstance(oy, (int, float)):
+            if oy is not None:
                 self.ax_y.offset = float(oy)
         except Exception:
+            logger.exception("Failed applying axis calibration (%s)", source)
             return False
 
+        logger.debug(
+            "Applied axis calibration (%s): scale_x=%s scale_y=%s units=%s offset_x=%s offset_y=%s",
+            source,
+            dx,
+            dy,
+            units,
+            ox,
+            oy,
+        )
         return True
+
+    def _apply_calibration_from_original_metadata(
+        self,
+        meta_override: Optional[dict] = None,
+        source: str = "signal metadata",
+    ) -> bool:
+        meta = meta_override if meta_override is not None else self._get_original_metadata_dict()
+        if not meta:
+            logger.debug("No original metadata available for calibration (%s)", source)
+            return False
+
+        extracted = self._extract_ser_calibration(meta)
+        if extracted is None:
+            logger.debug("Could not extract calibration values from metadata (%s)", source)
+            return False
+
+        dx, dy, ox, oy = extracted
+        return self._apply_axis_calibration_values(dx, dy, "m", ox=ox, oy=oy, source=source)
+
+    def _reload_calibration_from_file_metadata(self) -> bool:
+        if not self.file_path:
+            logger.debug("Cannot reload metadata calibration: file_path is empty")
+            return False
+
+        logger.debug("Reloading calibration metadata from file: %s", self.file_path)
+        try:
+            signal = hs.load(self.file_path)
+            if signal.axes_manager.navigation_dimension != 0:
+                signal = signal.inav[0, 0]
+        except Exception:
+            logger.exception("Failed to load file for metadata calibration reload: %s", self.file_path)
+            return False
+
+        meta = self._get_original_metadata_dict_from_signal(signal)
+        ok = self._apply_calibration_from_original_metadata(
+            meta_override=meta,
+            source="file metadata reload",
+        )
+        logger.debug("Metadata calibration reload result: success=%s", ok)
+        return ok
 
 
     def _open_calibration_dialog(self, initial_state: Optional[Dict[str, Any]] = None) -> None:
@@ -323,6 +397,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 "Calibration parameters are only editable for image views.",
             )
             return
+
+        logger.debug("Opening calibration dialog: initial_state_keys=%s", sorted((initial_state or {}).keys()))
 
         state = dict(initial_state or {})
         current_scale_x = float(self.ax_x.scale)
@@ -354,6 +430,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             text = (message or "").strip()
             lbl_ref_error.setText(text)
             lbl_ref_error.setVisible(bool(text))
+            if text:
+                logger.debug("Calibration reference validation message: %s", text)
 
         def sync_locked_ppu() -> None:
             if chk_lock_ratio.isChecked():
@@ -412,6 +490,13 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             if chk_lock_ratio.isChecked():
                 edit_ppu_y.setText(f"{ppu:.12g}")
             set_ref_error(None)
+            logger.debug(
+                "Calibration reference parsed: pixels=%s distance=%s units=%s computed_ppu=%s",
+                ref_pixels,
+                ref_units,
+                target_units,
+                ppu,
+            )
 
         chk_lock_ratio.toggled.connect(sync_locked_ppu)
         edit_ppu_x.textChanged.connect(sync_locked_ppu)
@@ -432,6 +517,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         layout.addRow("Reference picker:", draw_button)
 
         draw_result_code = 2
+        metadata_reloaded_in_dialog = False
 
         def _collect_state() -> Dict[str, Any]:
             return {
@@ -444,25 +530,66 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             }
 
         def _request_draw() -> None:
+            logger.debug("Calibration dialog draw requested")
             self._calibration_dialog_state = _collect_state()
             dialog.done(draw_result_code)
 
         draw_button.clicked.connect(_request_draw)
 
+        def _reload_from_metadata() -> None:
+            nonlocal metadata_reloaded_in_dialog
+            logger.debug("Calibration dialog metadata reload requested")
+            if not self._reload_calibration_from_file_metadata():
+                set_ref_error("Could not reload calibration metadata from file.")
+                QtWidgets.QMessageBox.warning(
+                    dialog,
+                    "Calibration",
+                    "Could not reload calibration metadata from this file.",
+                )
+                return
+
+            self._manual_calibrated = False
+            self._calibration_status = "metadata"
+            self.is_reciprocal_space = self._detect_reciprocal_space(self.signal)
+            self._refresh_view_after_calibration_change()
+            metadata_reloaded_in_dialog = True
+
+            scale_x = float(self.ax_x.scale)
+            scale_y = float(self.ax_y.scale)
+            ppu_x = 1.0 / scale_x if scale_x > 0 else 1.0
+            ppu_y = 1.0 / scale_y if scale_y > 0 else 1.0
+            edit_ppu_x.setText(f"{ppu_x:.12g}")
+            edit_ppu_y.setText(f"{ppu_y:.12g}")
+            edit_units.setText(unit_utils.normalize_axis_unit(self.ax_x.units, default="nm"))
+            set_ref_error(None)
+            logger.debug(
+                "Calibration dialog populated from reloaded metadata: ppu_x=%s ppu_y=%s units=%s",
+                ppu_x,
+                ppu_y,
+                unit_utils.normalize_axis_unit(self.ax_x.units, default="nm"),
+            )
+
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
             parent=dialog,
         )
+        btn_reload_meta = buttons.addButton(
+            "Reload Metadata Calibration",
+            QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        btn_reload_meta.clicked.connect(_reload_from_metadata)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
         result = dialog.exec_()
         if result == draw_result_code:
+            logger.debug("Calibration dialog closed for distance drawing")
             self._start_calibration_distance_pick()
             return
 
         if result != QtWidgets.QDialog.Accepted:
+            logger.debug("Calibration dialog cancelled")
             self._calibration_dialog_state = None
             return
 
@@ -489,8 +616,38 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             return
 
-        self.ax_x.scale = 1.0 / new_ppu_x
-        self.ax_y.scale = 1.0 / new_ppu_y
+        logger.debug(
+            "Applying manual calibration from dialog: ppu_x=%s ppu_y=%s units=%s lock_xy=%s",
+            new_ppu_x,
+            new_ppu_y,
+            new_units,
+            chk_lock_ratio.isChecked(),
+        )
+
+        proposed_scale_x = 1.0 / new_ppu_x
+        proposed_scale_y = 1.0 / new_ppu_y
+        current_units = unit_utils.normalize_axis_unit(self.ax_x.units, default="nm")
+        current_scale_x = float(self.ax_x.scale)
+        current_scale_y = float(self.ax_y.scale)
+
+        if (
+            metadata_reloaded_in_dialog
+            and abs(proposed_scale_x - current_scale_x) <= 1e-15
+            and abs(proposed_scale_y - current_scale_y) <= 1e-15
+            and new_units == current_units
+        ):
+            logger.debug(
+                "Calibration dialog accepted after metadata reload with unchanged values; preserving metadata status"
+            )
+            self._manual_calibrated = False
+            self._calibration_status = "metadata"
+            self.is_reciprocal_space = self._detect_reciprocal_space(self.signal)
+            self._refresh_view_after_calibration_change()
+            self._calibration_dialog_state = None
+            return
+
+        self.ax_x.scale = proposed_scale_x
+        self.ax_y.scale = proposed_scale_y
         self.ax_x.units = new_units
         self.ax_y.units = new_units
         self._manual_calibrated = True
@@ -498,21 +655,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._calibration_dialog_state = None
         metadata_reciprocal = self._detect_reciprocal_space(self.signal)
         self.is_reciprocal_space = bool(metadata_reciprocal or unit_utils.is_reciprocal_unit(new_units))
-
-        x_offset, y_offset, w, h = self.image_bounds
-        if self.img_orig is not None:
-            self.img_orig.setRect(QtCore.QRectF(x_offset, y_offset, w, h))
-
-        if self.p1 is not None:
-            self.p1.setXRange(x_offset, x_offset + w, padding=0)
-            self.p1.setYRange(y_offset, y_offset + h, padding=0)
-
-        if self.scale_bar is not None:
-            self._sync_scale_bar_units_from_axes()
-            if hasattr(self.scale_bar, "_update_geometry"):
-                self.scale_bar._update_geometry()
-
-        self._refresh_scale_bar_calibration_tag()
+        self._refresh_view_after_calibration_change()
+        logger.debug("Manual calibration applied successfully")
 
     def _start_calibration_distance_pick(self) -> None:
         if self.line_tool is None:
@@ -533,6 +677,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.btn_measure.setStyleSheet("")
 
         self.line_tool.disable()
+        self._on_measurement_drawing_state_changed(False)
 
         state = dict(self._calibration_dialog_state or {})
         self._line_draw_mode = "calibration"
@@ -546,6 +691,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self._on_calibration_pixels_selected = _on_pixels_selected
         self.line_tool.enable()
+        self._on_measurement_drawing_state_changed(False)
 
     def _set_base_window_title(self, title: str) -> None:
         self._base_window_title = title
@@ -553,15 +699,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _on_measurement_drawing_state_changed(self, is_drawing: bool) -> None:
         title = self._base_window_title or self.windowTitle()
-        if is_drawing:
-            if not title.startswith("Measurement mode - "):
-                title = f"Measurement mode - {title}"
-        elif title.startswith("Measurement mode - "):
-            title = title[len("Measurement mode - "):]
+        for prefix in ("Measurement mode - ", "<esc> to exit measurement mode - "):
+            if title.startswith(prefix):
+                title = title[len(prefix):]
+
+        measurement_ready = bool(self.line_tool is not None and getattr(self.line_tool, "is_enabled", False))
+        if measurement_ready:
+            title = f"<esc> to exit measurement mode - {title}"
 
         if self.windowTitle() != title:
             self.setWindowTitle(title)
-            logger.debug("Window title updated for measurement mode: drawing=%s title=%s", is_drawing, title)
+            logger.debug(
+                "Window title updated for measurement mode: drawing=%s ready=%s title=%s",
+                is_drawing,
+                measurement_ready,
+                title,
+            )
 
     def _sync_scale_bar_units_from_axes(self) -> None:
         if self.scale_bar is None or self.ax_x is None:
@@ -573,6 +726,36 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
         self.scale_bar.units = display_unit
         self.scale_bar.reciprocal = reciprocal_mode
+        logger.debug(
+            "Scale bar sync from axes: axis_units=%s display_unit=%s reciprocal=%s",
+            self.ax_x.units,
+            display_unit,
+            reciprocal_mode,
+        )
+
+    def _refresh_view_after_calibration_change(self) -> None:
+        x_offset, y_offset, w, h = self.image_bounds
+        logger.debug(
+            "Refreshing view after calibration change: x_offset=%s y_offset=%s w=%s h=%s",
+            x_offset,
+            y_offset,
+            w,
+            h,
+        )
+
+        if self.img_orig is not None:
+            self.img_orig.setRect(QtCore.QRectF(x_offset, y_offset, w, h))
+
+        if self.p1 is not None:
+            self.p1.setXRange(x_offset, x_offset + w, padding=0)
+            self.p1.setYRange(y_offset, y_offset + h, padding=0)
+
+        if self.scale_bar is not None:
+            self._sync_scale_bar_units_from_axes()
+            if hasattr(self.scale_bar, "_update_geometry"):
+                self.scale_bar._update_geometry()
+
+        self._refresh_scale_bar_calibration_tag()
 
     def _refresh_scale_bar_calibration_tag(self) -> None:
         if self.scale_bar is None or not hasattr(self.scale_bar, "set_status_tag"):
@@ -584,6 +767,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.scale_bar.set_status_tag("manually calibrated")
         else:
             self.scale_bar.set_status_tag(None)
+        logger.debug("Scale bar calibration tag refreshed: status=%s", self._calibration_status)
 
     def _detect_reciprocal_space(self, signal) -> bool:
         """Determine if the signal should be treated as reciprocal space.
@@ -1075,7 +1259,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         act_intensity.triggered.connect(lambda: self._show_not_implemented("Intensity"))
 
         act_profile = measure_menu.addAction("Profile")
-        act_profile.triggered.connect(lambda: self._show_not_implemented("Profile"))
+        act_profile.triggered.connect(self._menu_start_profile_measurement)
 
         display_menu = menu_bar.addMenu("Display")
         act_adjust = display_menu.addAction("Adjust")
@@ -1104,9 +1288,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             open_image_file(selected_file)
 
     def _menu_start_distance_measurement(self) -> None:
+        logger.debug("Menu action: start distance measurement")
         if self.btn_measure is not None and not self.btn_measure.isChecked():
             self.btn_measure.setChecked(True)
         self._toggle_line_measurement()
+
+    def _menu_start_profile_measurement(self) -> None:
+        logger.debug("Menu action: start profile measurement")
+        self.measurements.start_profile_measurement()
 
     def _on_inverse_fft_toggled(self, checked: bool) -> None:
         if self.chk_inverse is not None:
@@ -1359,6 +1548,15 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _delete_selected_measurement(self):
         self.measurements.delete_selected_measurement()
+
+    def delete_measurement_by_history_id(self, entry_id: int, entry_type: str):
+        self.measurements.delete_measurement_by_history_id(entry_id, entry_type)
+
+    def open_measurement_by_history_id(self, entry_id: int, entry_type: str):
+        self.measurements.open_measurement_by_history_id(entry_id, entry_type)
+
+    def rename_measurement_by_history_id(self, entry_id: int, entry_type: str, new_text: str):
+        self.measurements.rename_measurement_by_history_id(entry_id, entry_type, new_text)
 
     def _set_label_fill(self, text_item: pg.TextItem, brush: pg.QtGui.QBrush):
         self.measurements.set_label_fill(text_item, brush)

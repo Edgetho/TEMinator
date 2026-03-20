@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import List
 from typing import Optional
+from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
@@ -28,38 +29,92 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Measurement History")
         self.resize(500, 400)
-        self.measurements = []  # Store all measurements
+        self.measurements: list[dict[str, Any]] = []
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QVBoxLayout(central)
 
         self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         layout.addWidget(QtWidgets.QLabel("Measurements:"))
         layout.addWidget(self.list_widget)
+        self.list_widget.itemDoubleClicked.connect(self._open_selected_measurement)
+        self.list_widget.itemChanged.connect(self._on_history_item_changed)
+
+        self._suppress_item_changed = False
+        self._editing_item = False
+
+        rename_shortcut_return = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Return), self)
+        rename_shortcut_return.activated.connect(self._begin_inline_rename_selected)
+        rename_shortcut_enter = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Enter), self)
+        rename_shortcut_enter.activated.connect(self._begin_inline_rename_selected)
 
         btn_layout = QtWidgets.QHBoxLayout()
         btn_clear = QtWidgets.QPushButton("Clear All")
         btn_clear.clicked.connect(self.clear_all)
         btn_delete = QtWidgets.QPushButton("Delete Selected")
         btn_delete.clicked.connect(self.delete_selected)
+        btn_rename = QtWidgets.QPushButton("Rename Selected")
+        btn_rename.clicked.connect(self._begin_inline_rename_selected)
         btn_copy = QtWidgets.QPushButton("Copy Selected")
         btn_copy.clicked.connect(self.copy_selected)
         btn_export = QtWidgets.QPushButton("Export as CSV")
         btn_export.clicked.connect(self.export_as_csv)
         btn_layout.addWidget(btn_clear)
         btn_layout.addWidget(btn_delete)
+        btn_layout.addWidget(btn_rename)
         btn_layout.addWidget(btn_copy)
         btn_layout.addWidget(btn_export)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-    def add_measurement(self, measurement_text: str):
+    def _selected_item_with_metadata(self):
+        row = self.list_widget.currentRow()
+        if row < 0:
+            return None, None, row
+
+        item = self.list_widget.item(row)
+        if item is None:
+            return None, None, row
+
+        metadata = item.data(QtCore.Qt.UserRole)
+        if not isinstance(metadata, dict):
+            metadata = {
+                "id": None,
+                "type": "distance",
+                "text": item.text(),
+            }
+        return item, metadata, row
+
+    def add_measurement(
+        self,
+        measurement_text: str,
+        *,
+        measurement_id: int | None = None,
+        measurement_type: str = "distance",
+    ):
         """Add a measurement to the history."""
-        self.list_widget.addItem(measurement_text)
-        self.measurements.append(measurement_text)
+        item = QtWidgets.QListWidgetItem(measurement_text)
+        metadata = {
+            "id": measurement_id,
+            "type": measurement_type,
+            "text": measurement_text,
+        }
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
+        item.setData(QtCore.Qt.UserRole, metadata)
+        self._suppress_item_changed = True
+        self.list_widget.addItem(item)
+        self._suppress_item_changed = False
+        self.measurements.append(metadata)
         self.list_widget.scrollToBottom()
-        logger.debug("MeasurementHistory add: count=%s text=%s", len(self.measurements), measurement_text)
+        logger.debug(
+            "MeasurementHistory add: count=%s id=%s type=%s text=%s",
+            len(self.measurements),
+            measurement_id,
+            measurement_type,
+            measurement_text,
+        )
 
     def clear_all(self, _checked: bool = False, *, notify_parent: bool = True):
         """Clear all measurements."""
@@ -79,8 +134,8 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
 
     def delete_selected(self):
         """Delete the currently selected measurement from history."""
-        row = self.list_widget.currentRow()
-        if row < 0:
+        item, metadata, row = self._selected_item_with_metadata()
+        if item is None or metadata is None or row < 0:
             logger.debug("MeasurementHistory delete selected ignored: no row selected")
             QtWidgets.QMessageBox.information(self, "Delete", "No measurement selected.")
             return
@@ -90,16 +145,119 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
             return
 
         text = item.text()
+        entry_id = metadata.get("id")
+        entry_type = metadata.get("type", "distance")
         del item
-        logger.debug("MeasurementHistory deleting row=%s text=%s", row, text)
+        logger.debug(
+            "MeasurementHistory deleting row=%s id=%s type=%s text=%s",
+            row,
+            entry_id,
+            entry_type,
+            text,
+        )
 
         if 0 <= row < len(self.measurements):
             self.measurements.pop(row)
 
         parent = self.parent()
-        if parent is not None and hasattr(parent, "delete_measurement_by_label"):
+        if (
+            parent is not None
+            and hasattr(parent, "delete_measurement_by_history_id")
+            and entry_id is not None
+        ):
+            parent.delete_measurement_by_history_id(int(entry_id), str(entry_type))
+        elif parent is not None and hasattr(parent, "delete_measurement_by_label"):
             parent.delete_measurement_by_label(text)
         logger.debug("MeasurementHistory delete selected complete: remaining=%s", len(self.measurements))
+
+    def _begin_inline_rename_selected(self):
+        """Start inline editing of selected history entry text."""
+        if self.list_widget.state() == QtWidgets.QAbstractItemView.EditingState:
+            return
+
+        item, metadata, row = self._selected_item_with_metadata()
+        if item is None or metadata is None or row < 0:
+            logger.debug("MeasurementHistory inline rename ignored: no row selected")
+            QtWidgets.QMessageBox.information(self, "Rename", "No measurement selected.")
+            return
+
+        self._editing_item = True
+        self.list_widget.editItem(item)
+        logger.debug("MeasurementHistory inline rename started: row=%s", row)
+
+    def _on_history_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
+        if self._suppress_item_changed:
+            return
+
+        metadata = item.data(QtCore.Qt.UserRole)
+        if not isinstance(metadata, dict):
+            metadata = {
+                "id": None,
+                "type": "distance",
+                "text": item.text(),
+            }
+
+        old_text = str(metadata.get("text", ""))
+        new_text = item.text().strip()
+
+        if not new_text:
+            self._suppress_item_changed = True
+            item.setText(old_text)
+            self._suppress_item_changed = False
+            logger.debug("MeasurementHistory inline rename rejected: empty text")
+            return
+
+        if new_text == old_text:
+            self._editing_item = False
+            return
+
+        entry_id = metadata.get("id")
+        entry_type = str(metadata.get("type", "distance"))
+
+        parent = self.parent()
+        if (
+            parent is not None
+            and hasattr(parent, "rename_measurement_by_history_id")
+            and entry_id is not None
+        ):
+            parent.rename_measurement_by_history_id(int(entry_id), entry_type, new_text)
+
+        metadata["text"] = new_text
+        self._suppress_item_changed = True
+        item.setData(QtCore.Qt.UserRole, metadata)
+        self._suppress_item_changed = False
+
+        row = self.list_widget.row(item)
+        if 0 <= row < len(self.measurements):
+            self.measurements[row] = metadata
+
+        self._editing_item = False
+        logger.debug(
+            "MeasurementHistory inline rename committed: row=%s id=%s type=%s old=%s new=%s",
+            row,
+            entry_id,
+            entry_type,
+            old_text,
+            new_text,
+        )
+
+    def _open_selected_measurement(self, item: QtWidgets.QListWidgetItem):
+        """Re-open or focus a measurement target (currently profile windows)."""
+        metadata = item.data(QtCore.Qt.UserRole)
+        if not isinstance(metadata, dict):
+            logger.debug("MeasurementHistory open ignored: missing metadata")
+            return
+
+        entry_id = metadata.get("id")
+        entry_type = str(metadata.get("type", "distance"))
+        if entry_id is None:
+            logger.debug("MeasurementHistory open ignored: missing entry id")
+            return
+
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "open_measurement_by_history_id"):
+            logger.debug("MeasurementHistory open requested: id=%s type=%s", entry_id, entry_type)
+            parent.open_measurement_by_history_id(int(entry_id), entry_type)
 
     def copy_selected(self):
         """Copy selected measurement to clipboard."""
@@ -127,7 +285,7 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write("Measurement\n")
                     for measurement in self.measurements:
-                        f.write(f"{measurement}\n")
+                        f.write(f"{measurement.get('text', '')}\n")
                 logger.debug("MeasurementHistory exported CSV: path=%s count=%s", file_path, len(self.measurements))
                 QtWidgets.QMessageBox.information(
                     self, "Success", f"Exported to {file_path}"
@@ -137,6 +295,41 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.critical(
                     self, "Error", f"Could not export: {str(e)}"
                 )
+
+
+class LineProfileWindow(QtWidgets.QMainWindow):
+    """Window displaying intensity profile along a measured line."""
+
+    def __init__(
+        self,
+        title: str,
+        distances: np.ndarray,
+        intensities: np.ndarray,
+        x_axis_label: str = "Distance (px)",
+        parent: Optional[QtWidgets.QWidget] = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(640, 420)
+
+        central = QtWidgets.QWidget(self)
+        self.setCentralWidget(central)
+        layout = QtWidgets.QVBoxLayout(central)
+
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground("w")
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        self.plot_widget.setLabel("bottom", x_axis_label)
+        self.plot_widget.setLabel("left", "Intensity")
+        self.plot_widget.plot(distances, intensities, pen=pg.mkPen("b", width=2))
+        layout.addWidget(self.plot_widget)
+
+        logger.debug(
+            "LineProfileWindow created: title=%s points=%s x_axis=%s",
+            title,
+            len(distances),
+            x_axis_label,
+        )
 
 
 class MetadataWindow(QtWidgets.QMainWindow):
