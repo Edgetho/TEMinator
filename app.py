@@ -10,6 +10,7 @@ minimal Qt bootstrap; all substantial UI classes live in:
 - image_viewer.py       – ImageViewerWindow and helpers
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -78,6 +79,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_image(self, file_path: str) -> None:
         open_image_file(file_path)
+        if self.isVisible():
+            self.close()
 
     # Vim-style command handling -------------------------------------
 
@@ -196,7 +199,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        open_image_file(str(path))
+        self._open_image(str(path))
 
     def _open_directory_fuzzy_view(self) -> None:
         directory = Path.cwd()
@@ -212,9 +215,24 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog.exec_()
 
 
+def _parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    """Parse TEMinator CLI arguments and return remaining Qt arguments."""
+    parser = argparse.ArgumentParser(
+        prog="teminator",
+        description="Launch TEMinator and optionally open an image file.",
+    )
+    parser.add_argument(
+        "image",
+        nargs="?",
+        help="Optional image path to open on startup.",
+    )
+    return parser.parse_known_args(argv)
+
+
 def main() -> None:
     """Main entry point for the application."""
-    app = QtWidgets.QApplication(sys.argv)
+    cli_args, qt_args = _parse_cli_args(sys.argv[1:])
+    app = QtWidgets.QApplication([sys.argv[0], *qt_args])
 
     # Optional: set a fun custom application icon if available.
     # Place your icon file next to this app.py as "app_icon.png"
@@ -225,6 +243,20 @@ def main() -> None:
 
     window = MainWindow()
     window.show()
+
+    if cli_args.image:
+        startup_path = Path(cli_args.image).expanduser()
+        if not startup_path.is_absolute():
+            startup_path = (Path.cwd() / startup_path).resolve()
+        if startup_path.is_file():
+            window._open_image(str(startup_path))
+        else:
+            QtWidgets.QMessageBox.warning(
+                window,
+                "Open File",
+                f"File not found: {startup_path}",
+            )
+
     sys.exit(app.exec())
 
 

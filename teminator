@@ -1,0 +1,109 @@
+#!/bin/bash
+# Run the TEM Companion app from the command line. This is a convenient way to
+# ensure temcompanion runs in the environment defined by environment.yml.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/environment.yml"
+
+print_help() {
+  cat <<EOF
+Usage: $(basename "$0") [--debug-qt] [--help] [app-args...]
+
+Runs TEMinator inside the conda/mamba environment defined by environment.yml.
+
+Options:
+  --debug-qt   Enable Qt plugin debug logging for this run (QT_DEBUG_PLUGINS=1).
+  -h, --help   Show this help message and exit.
+
+Examples:
+  $(basename "$0")
+  $(basename "$0") --debug-qt
+  $(basename "$0") /path/to/image.dm4
+  $(basename "$0") --debug-qt /path/to/image.dm4
+
+Notes:
+  - All non-launcher arguments are forwarded to app.py.
+  - On Linux, the launcher also applies Qt env guards to avoid mixed
+    system/conda plugin ABI issues.
+EOF
+}
+
+ENABLE_QT_DEBUG=0
+SHOW_HELP=0
+APP_ARGS=()
+
+for arg in "$@"; do
+  case "$arg" in
+    --debug-qt)
+      ENABLE_QT_DEBUG=1
+      ;;
+    -h|--help)
+      SHOW_HELP=1
+      ;;
+    *)
+      APP_ARGS+=("$arg")
+      ;;
+  esac
+done
+
+if [[ "$SHOW_HELP" -eq 1 ]]; then
+  print_help
+  exit 0
+fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Error: environment.yml not found at: $ENV_FILE"
+  exit 1
+fi
+
+ENV_NAME="$(awk -F': *' '/^name:/ {print $2; exit}' "$ENV_FILE" | tr -d '"' | tr -d "'")"
+
+if [[ -z "${ENV_NAME:-}" ]]; then
+  echo "Error: Could not read environment name from $ENV_FILE (expected: name: <env>)"
+  exit 1
+fi
+
+if command -v mamba >/dev/null 2>&1; then
+  PKG_MGR="mamba"
+elif command -v conda >/dev/null 2>&1; then
+  PKG_MGR="conda"
+else
+  echo "Error: Neither 'mamba' nor 'conda' is available in PATH."
+  exit 1
+fi
+
+if ! "$PKG_MGR" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
+  echo "Error: Environment '$ENV_NAME' is not installed."
+  echo "Create it with:"
+  echo "  $PKG_MGR env create -f \"$ENV_FILE\""
+  exit 1
+fi
+
+DEBUG_QT_ENV=()
+if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then
+  DEBUG_QT_ENV+=("QT_DEBUG_PLUGINS=1")
+fi
+
+# Prevent host Qt settings from leaking into the conda environment.
+# This avoids ABI mismatches like:
+# undefined symbol ... QXcbWindow ... Qt_5_PRIVATE_API
+if [[ "$(uname -s)" == "Linux" ]]; then
+  exec "$PKG_MGR" run -n "$ENV_NAME" env \
+    -u QT_PLUGIN_PATH \
+    -u QT_QPA_PLATFORM_PLUGIN_PATH \
+    -u QML2_IMPORT_PATH \
+    QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}" \
+    QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-none}" \
+    QT_OPENGL="${QT_OPENGL:-software}" \
+    "${DEBUG_QT_ENV[@]}" \
+    python app.py "${APP_ARGS[@]}"
+else
+  exec "$PKG_MGR" run -n "$ENV_NAME" env \
+    -u QT_PLUGIN_PATH \
+    -u QT_QPA_PLATFORM_PLUGIN_PATH \
+    -u QML2_IMPORT_PATH \
+    "${DEBUG_QT_ENV[@]}" \
+    python app.py "${APP_ARGS[@]}"
+fi
