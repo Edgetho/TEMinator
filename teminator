@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/environment.yml"
+APP_FILE="$SCRIPT_DIR/app.py"
 
 print_help() {
   cat <<EOF
@@ -58,6 +59,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$APP_FILE" ]]; then
+  echo "Error: app.py not found at: $APP_FILE"
+  exit 1
+fi
+
 ENV_NAME="$(awk -F': *' '/^name:/ {print $2; exit}' "$ENV_FILE" | tr -d '"' | tr -d "'")"
 
 if [[ -z "${ENV_NAME:-}" ]]; then
@@ -81,29 +87,27 @@ if ! "$PKG_MGR" env list | awk '{print $1}' | grep -Fxq "$ENV_NAME"; then
   exit 1
 fi
 
-DEBUG_QT_ENV=()
-if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then
-  DEBUG_QT_ENV+=("QT_DEBUG_PLUGINS=1")
-fi
+# Build one launch command (avoids duplicated Linux/non-Linux exec blocks).
+set -- "$PKG_MGR" run -n "$ENV_NAME" env \
+  -u QT_PLUGIN_PATH \
+  -u QT_QPA_PLATFORM_PLUGIN_PATH \
+  -u QML2_IMPORT_PATH
 
-# Prevent host Qt settings from leaking into the conda environment.
-# This avoids ABI mismatches like:
-# undefined symbol ... QXcbWindow ... Qt_5_PRIVATE_API
 if [[ "$(uname -s)" == "Linux" ]]; then
-  exec "$PKG_MGR" run -n "$ENV_NAME" env \
-    -u QT_PLUGIN_PATH \
-    -u QT_QPA_PLATFORM_PLUGIN_PATH \
-    -u QML2_IMPORT_PATH \
+  set -- "$@" \
     QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}" \
     QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-none}" \
-    QT_OPENGL="${QT_OPENGL:-software}" \
-    "${DEBUG_QT_ENV[@]}" \
-    python app.py "${APP_ARGS[@]}"
-else
-  exec "$PKG_MGR" run -n "$ENV_NAME" env \
-    -u QT_PLUGIN_PATH \
-    -u QT_QPA_PLATFORM_PLUGIN_PATH \
-    -u QML2_IMPORT_PATH \
-    "${DEBUG_QT_ENV[@]}" \
-    python app.py "${APP_ARGS[@]}"
+    QT_OPENGL="${QT_OPENGL:-software}"
 fi
+
+if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then
+  set -- "$@" QT_DEBUG_PLUGINS=1
+fi
+
+set -- "$@" python "$APP_FILE"
+
+if [[ ${#APP_ARGS[@]} -gt 0 ]]; then
+  set -- "$@" "${APP_ARGS[@]}"
+fi
+
+exec "$@"
