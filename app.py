@@ -25,6 +25,7 @@ minimal Qt bootstrap; all substantial UI classes live in:
 """
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -312,12 +313,27 @@ def _parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         nargs="?",
         help="Optional image path to open on startup.",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose debug logging.",
+    )
     return parser.parse_known_args(argv)
 
 
 def main() -> None:
     """Main entry point for the application."""
     cli_args, qt_args = _parse_cli_args(sys.argv[1:])
+
+    logging.basicConfig(
+        level=logging.DEBUG if cli_args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    logger = logging.getLogger(__name__)
+    logger.debug("Verbose mode enabled")
+    logger.debug("Qt passthrough args: %s", qt_args)
+
     app = QtWidgets.QApplication([sys.argv[0], *qt_args])
 
     # Optional: set a fun custom application icon if available.
@@ -334,6 +350,7 @@ def main() -> None:
         startup_path = Path(cli_args.image).expanduser()
         if not startup_path.is_absolute():
             startup_path = (Path.cwd() / startup_path).resolve()
+        logger.debug("Startup image argument resolved to: %s", startup_path)
         if startup_path.is_file():
             window._open_image(str(startup_path))
         else:

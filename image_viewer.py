@@ -5,6 +5,7 @@
 """Image viewer window and image-opening helper."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 
@@ -28,6 +29,7 @@ from scale_bars import DynamicScaleBar
 FFT_COLORS = ["r", "g", "b", "y", "c", "m"]
 DEFAULT_IMAGE_WINDOW_SIZE = (1000, 900)
 DEFAULT_FFT_WINDOW_SIZE = (700, 700)
+logger = logging.getLogger(__name__)
 
 
 class ImageViewerWindow(QtWidgets.QMainWindow):
@@ -144,11 +146,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _load_and_setup(self):
         try:
+            logger.debug("Loading image via HyperSpy: %s", self.file_path)
             s = hs.load(self.file_path)
             if s.axes_manager.navigation_dimension != 0:
+                logger.debug(
+                    "Loaded signal has navigation_dimension=%s; using first navigation element",
+                    s.axes_manager.navigation_dimension,
+                )
                 s = s.inav[0, 0]
             self._setup_from_signal(s)
+            logger.debug("Image setup complete for: %s", self.file_path)
         except Exception as e:
+            logger.exception("Failed to load file: %s", self.file_path)
             QtWidgets.QMessageBox.critical(self, "Error Loading File", str(e))
 
     def _setup_from_signal(self, signal, window_suffix: Optional[str] = None):
@@ -174,6 +183,13 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         # multiple images from the same file are classified consistently,
         # falling back to an image‑content heuristic only as a last resort.
         self.is_reciprocal_space = self._detect_reciprocal_space(signal)
+        logger.debug(
+            "Signal setup: shape=%s units=(%s,%s) reciprocal=%s",
+            getattr(self.data, "shape", None),
+            getattr(self.ax_x, "units", None),
+            getattr(self.ax_y, "units", None),
+            self.is_reciprocal_space,
+        )
 
         self._init_display_window()
 
@@ -448,6 +464,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.display_min = float(finite.min())
             self.display_max = float(finite.max())
         self.display_gamma = 1.0
+        logger.debug(
+            "Initialized display window: min=%s max=%s gamma=%s",
+            self.display_min,
+            self.display_max,
+            self.display_gamma,
+        )
 
     def setup_ui(self):
         central = QtWidgets.QWidget()
@@ -760,6 +782,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         cmd_str = cmd.strip()
         if not cmd_str:
             return False
+        logger.debug("Executing vim command: cmd=%s arg=%s", cmd, arg)
 
         upper_cmd = cmd_str.upper()
         lower_cmd = cmd_str.lower()
@@ -1042,6 +1065,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 "No image is currently loaded to save.",
             )
             return
+        logger.debug("Saving view/FFTs for file: %s", self.file_path)
 
         # Choose output directory
         try:
@@ -1146,6 +1170,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 "Save Images",
                 f"Failed to save main view to {main_path}.",
             )
+        else:
+            logger.debug("Saved main view: %s (%s)", main_path, fmt_name)
 
         # Remove temporary overlay label after saving
         if extra_label_applied:
@@ -1205,6 +1231,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             fft_path = directory_path / f"{base_name}_fft{idx}.png"
             if fft_pixmap.save(str(fft_path), "PNG"):
                 fft_saved += 1
+                logger.debug("Saved FFT view: %s", fft_path)
 
             # Remove temporary overlay label after saving
             if extra_label_applied_fft:
@@ -1273,6 +1300,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
         self.fft_boxes.append(fft_box)
         self.fft_box_meta[fft_box] = {"id": fft_id, "text_item": text_item}
+        logger.debug(
+            "Added FFT ROI id=%s at (%.3f, %.3f) size=(%.3f, %.3f)",
+            fft_id,
+            roi_x,
+            roi_y,
+            roi_w,
+            roi_h,
+        )
 
     def _on_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem):
         region = fft_box.getArrayRegion(self.data, self.img_orig)
@@ -1281,6 +1316,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
 
         text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
+        logger.debug("FFT ROI finalized id=%s region_shape=%s", fft_id, getattr(region, "shape", None))
 
         self._open_or_update_fft_window(fft_box, fft_id, text_item, region)
 
@@ -1288,6 +1324,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem, region: np.ndarray
     ):
         if fft_box in self.fft_to_fft_window:
+            logger.debug("Updating FFT window for id=%s", fft_id)
             fft_window = self.fft_to_fft_window[fft_box]
             fft_window._fft_region = region
             fft_window._compute_fft()
@@ -1297,6 +1334,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             fft_window.raise_()
             fft_window.activateWindow()
         else:
+            logger.debug("Creating FFT window for id=%s", fft_id)
             fft_name = f"FFT {fft_id}"
             fft_window = ImageViewerWindow(
                 self.file_path,
@@ -1432,6 +1470,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.measurement_items.append((line, text_item))
         self._add_to_measurement_history(label_text)
+        logger.debug(
+            "Measurement #%s: p1=%s p2=%s distance_physical=%.6g distance_pixels=%.6g",
+            measurement_id,
+            p1,
+            p2,
+            dist_phys,
+            dist_px,
+        )
 
     def _on_measurement_label_clicked(self, label: pg.TextItem):
         selected_index = None
@@ -1777,15 +1823,18 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
 def open_image_file(file_path: str):
     """Open an image file; if it contains multiple images, open one window per image."""
     try:
+        logger.debug("Opening image file: %s", file_path)
         loaded = hs.load(file_path)
 
         signals = loaded if isinstance(loaded, list) else [loaded]
+        logger.debug("Loaded %d signal(s) from %s", len(signals), file_path)
 
         for sig_index, signal in enumerate(signals):
             if signal.axes_manager.navigation_dimension == 0:
                 suffix = f"[{sig_index}]" if len(signals) > 1 else None
                 window = ImageViewerWindow(file_path, signal=signal, window_suffix=suffix)
                 window.show()
+                logger.debug("Opened viewer for signal index %s suffix=%s", sig_index, suffix)
             else:
                 nav_shape = signal.axes_manager.navigation_shape
                 for nav_index in np.ndindex(nav_shape):
@@ -1799,6 +1848,13 @@ def open_image_file(file_path: str):
                         file_path, signal=sub_signal, window_suffix=suffix
                     )
                     window.show()
+                    logger.debug(
+                        "Opened viewer for signal index %s navigation index %s suffix=%s",
+                        sig_index,
+                        nav_index,
+                        suffix,
+                    )
 
     except Exception as e:
+        logger.exception("Could not open file: %s", file_path)
         QtWidgets.QMessageBox.critical(None, "Error", f"Could not open file: {str(e)}")
