@@ -8,6 +8,7 @@ from typing import Tuple, Optional, List, Dict
 import subprocess
 import os
 import logging
+import html
 from pathlib import Path
 
 import unit_utils
@@ -138,6 +139,114 @@ def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
     logger.debug("Displayed About dialog")
 
 
+def _plain_text_to_pre_html(content: str) -> str:
+    """Convert plain text content into escaped HTML wrapped in a styled <pre> block."""
+    escaped_content = html.escape(content)
+    return f"<pre class='mono-block'>{escaped_content}</pre>"
+
+
+def _dialog_content_stylesheet() -> str:
+    """Return a shared rich-text stylesheet for app-rendered dialogs."""
+    return """
+        body {
+            margin: 0;
+            padding: 8px;
+            line-height: 1.45;
+            font-size: 10pt;
+        }
+        h1, h2, h3 {
+            margin: 0.4em 0 0.3em 0;
+            font-weight: 600;
+        }
+        p, ul, ol {
+            margin: 0.25em 0 0.5em 0;
+        }
+        a {
+            text-decoration: none;
+            color: #2f6db3;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        code {
+            font-family: monospace;
+            font-size: 0.96em;
+            background: #f2f4f7;
+            border: 1px solid #d8dde6;
+            border-radius: 3px;
+            padding: 1px 4px;
+        }
+        pre {
+            font-family: monospace;
+            white-space: pre-wrap;
+            border: 1px solid #d8dde6;
+            border-radius: 6px;
+            background: #f7f9fc;
+            padding: 8px;
+        }
+        pre.mono-block {
+            white-space: pre;
+            font-size: 9.8pt;
+            background: #f8fafd;
+        }
+    """
+
+
+def _wrap_html_document(body_html: str) -> str:
+    """Wrap content in a complete HTML document with shared stylesheet."""
+    return (
+        "<html><head><style>"
+        f"{_dialog_content_stylesheet()}"
+        "</style></head><body>"
+        f"{body_html}"
+        "</body></html>"
+    )
+
+
+def _show_text_content_dialog(
+    parent_widget: QtWidgets.QWidget,
+    title: str,
+    content: str,
+    content_format: str = "html",
+    width: int = 800,
+    height: int = 600,
+) -> None:
+    """Render HTML/Markdown content in a consistent app-controlled dialog."""
+    dialog = QtWidgets.QDialog(parent_widget)
+    dialog.setWindowTitle(title)
+    dialog.resize(width, height)
+
+    layout = QtWidgets.QVBoxLayout(dialog)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(8)
+
+    text_view = QtWidgets.QTextBrowser(dialog)
+    text_view.setReadOnly(True)
+    text_view.setOpenExternalLinks(True)
+
+    fixed_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
+    if fixed_font.pointSize() > 0:
+        fixed_font.setPointSize(max(9, fixed_font.pointSize()))
+    text_view.setFont(fixed_font)
+
+    text_view.document().setDefaultStyleSheet(_dialog_content_stylesheet())
+
+    if content_format == "markdown":
+        if hasattr(text_view, "setMarkdown"):
+            text_view.setMarkdown(content)
+        else:
+            text_view.setHtml(_wrap_html_document(_plain_text_to_pre_html(content)))
+    else:
+        text_view.setHtml(_wrap_html_document(content))
+    layout.addWidget(text_view)
+
+    button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+    button_box.rejected.connect(dialog.close)
+    layout.addWidget(button_box)
+
+    dialog.exec_()
+
+
 def show_keyboard_shortcuts_dialog(
     parent_widget: QtWidgets.QWidget,
     menu_config: List,
@@ -156,22 +265,142 @@ def show_keyboard_shortcuts_dialog(
         extra_shortcuts: Optional dict of extra keyboard shortcuts not in main menu
         additional_colormaps: Optional list of colormap names to display
     """
-    from menu_manager import generate_keyboard_shortcuts_text
-    
-    shortcuts_text = generate_keyboard_shortcuts_text(menu_config, extra_shortcuts)
-    
-    # Add colormaps if provided
-    if additional_colormaps:
-        shortcuts_text += "\nDisplay > Colormap (Submenu):\n"
-        for cmap in additional_colormaps:
-            shortcuts_text += f"  {cmap.capitalize():<25} (via menu)\n"
-    
     logger.debug("Displaying keyboard shortcuts dialog")
-    
-    dialog = QtWidgets.QMessageBox(parent_widget)
+
+    dialog = QtWidgets.QDialog(parent_widget)
     dialog.setWindowTitle("Keyboard Shortcuts")
-    dialog.setText(shortcuts_text)
-    dialog.setFont(QtGui.QFont("Monospace", 9))
+    dialog.setStyleSheet(
+        """
+        QDialog {
+            background: #f7f8fb;
+        }
+        QGroupBox {
+            background: transparent;
+            border: none;
+            margin-top: 10px;
+            font-weight: 600;
+            padding-top: 2px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 0px;
+            padding: 0 4px;
+            color: #2b3442;
+        }
+        QLabel {
+            color: #1f2937;
+        }
+        QScrollArea {
+            background: transparent;
+        }
+        QDialogButtonBox QPushButton {
+            min-width: 88px;
+            padding: 6px 14px;
+        }
+        """
+    )
+
+    main_layout = QtWidgets.QVBoxLayout(dialog)
+    main_layout.setContentsMargins(12, 12, 12, 12)
+    main_layout.setSpacing(10)
+
+    header_label = QtWidgets.QLabel(
+        "<b style='font-size:14pt;'>TEMinator Keyboard Shortcuts</b><br>"
+    )
+    header_label.setTextFormat(QtCore.Qt.RichText)
+    header_label.setWordWrap(True)
+    main_layout.addWidget(header_label)
+
+    scroll = QtWidgets.QScrollArea(dialog)
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+    content_widget = QtWidgets.QWidget(scroll)
+    content_layout = QtWidgets.QVBoxLayout(content_widget)
+    content_layout.setContentsMargins(0, 0, 0, 0)
+    content_layout.setSpacing(10)
+
+    def add_section(title: str, rows: List[tuple[str, str]]) -> None:
+        if not rows:
+            return
+        group = QtWidgets.QGroupBox(title, content_widget)
+        section_layout = QtWidgets.QVBoxLayout(group)
+        section_layout.setContentsMargins(10, 10, 10, 10)
+        section_layout.setSpacing(6)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(4)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 1)
+
+        for row_idx, (name, shortcut) in enumerate(rows):
+            name_label = QtWidgets.QLabel(name)
+            name_label.setTextFormat(QtCore.Qt.PlainText)
+            name_label.setWordWrap(True)
+
+            shortcut_label = QtWidgets.QLabel(f"<code>{html.escape(shortcut)}</code>")
+            shortcut_label.setTextFormat(QtCore.Qt.RichText)
+            shortcut_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            shortcut_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+
+            grid.addWidget(name_label, row_idx, 0)
+            grid.addWidget(shortcut_label, row_idx, 1)
+
+        section_layout.addLayout(grid)
+        content_layout.addWidget(group)
+
+    menu_order = ["File", "Manipulate", "Measure", "Display", "Help"]
+    grouped_rows: Dict[str, List[tuple[str, str]]] = {}
+    for item in menu_config:
+        if not getattr(item, "shortcut", ""):
+            continue
+        menu_name = getattr(item, "menu_path", "") or "Other"
+        grouped_rows.setdefault(menu_name, []).append((item.title, item.shortcut))
+
+    for menu_name in menu_order:
+        add_section(menu_name, grouped_rows.pop(menu_name, []))
+
+    for menu_name in sorted(grouped_rows.keys()):
+        add_section(menu_name, grouped_rows[menu_name])
+
+    if extra_shortcuts:
+        add_section("Special", list(extra_shortcuts.items()))
+
+    if additional_colormaps:
+        colormap_rows = [(f"Colormap: {cmap.capitalize()}", "via menu") for cmap in additional_colormaps]
+        add_section("Display Colormaps", colormap_rows)
+
+    content_layout.addStretch(1)
+    scroll.setWidget(content_widget)
+    main_layout.addWidget(scroll)
+
+    button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+    button_box.rejected.connect(dialog.close)
+    main_layout.addWidget(button_box)
+
+    # Grow dialog to fit all shortcut rows so scrollbars are not needed on typical screens.
+    content_widget.adjustSize()
+    margins = main_layout.contentsMargins()
+    estimated_width = content_widget.sizeHint().width() + margins.left() + margins.right() + 32
+    estimated_height = (
+        header_label.sizeHint().height()
+        + content_widget.sizeHint().height()
+        + button_box.sizeHint().height()
+        + margins.top()
+        + margins.bottom()
+        + 36
+    )
+
+    screen = QtWidgets.QApplication.primaryScreen()
+    if screen is not None:
+        available = screen.availableGeometry()
+        max_width = int(available.width() * 0.9)
+        max_height = int(available.height() * 0.9)
+        dialog.resize(min(estimated_width, max_width), min(estimated_height, max_height))
+    else:
+        dialog.resize(max(620, estimated_width), max(620, estimated_height))
+
     dialog.exec_()
 
 
@@ -198,28 +427,15 @@ def show_readme_dialog(parent_widget: QtWidgets.QWidget) -> None:
     try:
         with open(readme_path, "r") as f:
             readme_content = f.read()
-        
-        # Create a proper dialog with scrollable text
-        dialog = QtWidgets.QDialog(parent_widget)
-        dialog.setWindowTitle("README")
-        dialog.resize(800, 600)
-        
-        layout = QtWidgets.QVBoxLayout()
-        
-        # Use QTextEdit for scrollable content
-        text_edit = QtWidgets.QTextEdit()
-        text_edit.setPlainText(readme_content)
-        text_edit.setReadOnly(True)
-        text_edit.setFont(QtGui.QFont("Monospace", 9))
-        layout.addWidget(text_edit)
-        
-        # Add close button
-        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        button_box.rejected.connect(dialog.close)
-        layout.addWidget(button_box)
-        
-        dialog.setLayout(layout)
-        dialog.exec_()
+
+        _show_text_content_dialog(
+            parent_widget=parent_widget,
+            title="README",
+            content=readme_content,
+            content_format="markdown",
+            width=900,
+            height=700,
+        )
         logger.debug("Displayed README content in scrollable dialog")
     except Exception as e:
         QtWidgets.QMessageBox.warning(

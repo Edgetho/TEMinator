@@ -8,8 +8,7 @@ Severe
 
 - distance measurement is not properly context aware for whether this is a real-space or reciprocal-space image (perhaps need to use metadata to extract this)
 
-
-
+- distance measurement often does not work even though menu bar displays that it is in measurement mode.
 
 - measurement mode no longer works after an FFT has been enabled in the main image window.
 
