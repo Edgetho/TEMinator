@@ -20,13 +20,16 @@ Runs TEMinator inside the conda/mamba environment defined by environment.yml.
 
 Options:
   --debug-qt   Enable Qt plugin debug logging for this run (QT_DEBUG_PLUGINS=1).
+  -v, --verbose
+               Enable verbose TEMinator debug logging (forwarded to app.py).
   -h, --help   Show this help message and exit.
 
 Examples:
   $(basename "$0")
   $(basename "$0") --debug-qt
+  $(basename "$0") --verbose
   $(basename "$0") /path/to/image.dm4
-  $(basename "$0") --debug-qt /path/to/image.dm4
+  $(basename "$0") --debug-qt --verbose /path/to/image.dm4
 
 Notes:
   - All non-launcher arguments are forwarded to app.py.
@@ -36,6 +39,7 @@ EOF
 }
 
 ENABLE_QT_DEBUG=0
+ENABLE_APP_VERBOSE=0
 SHOW_HELP=0
 APP_ARGS=()
 
@@ -43,6 +47,9 @@ for arg in "$@"; do
   case "$arg" in
     --debug-qt)
       ENABLE_QT_DEBUG=1
+      ;;
+    -v|--verbose)
+      ENABLE_APP_VERBOSE=1
       ;;
     -h|--help)
       SHOW_HELP=1
@@ -109,6 +116,10 @@ if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then
 fi
 
 set -- "$@" python "$APP_FILE"
+
+if [[ "$ENABLE_APP_VERBOSE" -eq 1 ]]; then
+  set -- "$@" --verbose
+fi
 
 if [[ ${#APP_ARGS[@]} -gt 0 ]]; then
   set -- "$@" "${APP_ARGS[@]}"
