@@ -98,23 +98,43 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu = menu_bar.addMenu("File")
         act_open = file_menu.addAction("Open")
         act_open.triggered.connect(self._open_file_dialog)
-        file_menu.addAction("Save View", lambda: self._show_not_implemented("Save View"))
-        file_menu.addAction("Build Figure", lambda: self._show_not_implemented("Build Figure"))
-        file_menu.addAction("Parameters", lambda: self._show_not_implemented("Parameters"))
+        act_save_view = file_menu.addAction("Save View", lambda: self._show_not_implemented("Save View"))
+        act_build_figure = file_menu.addAction("Build Figure", lambda: self._show_not_implemented("Build Figure"))
+        act_calibrate_image = file_menu.addAction("Calibrate Image", lambda: self._show_not_implemented("Calibrate Image"))
+        act_parameters = file_menu.addAction("Parameters", lambda: self._show_not_implemented("Parameters"))
 
         manipulate_menu = menu_bar.addMenu("Manipulate")
-        manipulate_menu.addAction("FFT", lambda: self._show_not_implemented("FFT"))
-        manipulate_menu.addAction("Inverse FFT", lambda: self._show_not_implemented("Inverse FFT"))
+        act_fft = manipulate_menu.addAction("FFT", lambda: self._show_not_implemented("FFT"))
+        act_inverse_fft = manipulate_menu.addAction("Inverse FFT", lambda: self._show_not_implemented("Inverse FFT"))
 
         measure_menu = menu_bar.addMenu("Measure")
-        measure_menu.addAction("Distance", lambda: self._show_not_implemented("Distance"))
-        measure_menu.addAction("History", lambda: self._show_not_implemented("History"))
-        measure_menu.addAction("Intensity", lambda: self._show_not_implemented("Intensity"))
-        measure_menu.addAction("Profile", lambda: self._show_not_implemented("Profile"))
+        act_distance = measure_menu.addAction("Distance", lambda: self._show_not_implemented("Distance"))
+        act_history = measure_menu.addAction("History", lambda: self._show_not_implemented("History"))
+        act_intensity = measure_menu.addAction("Intensity", lambda: self._show_not_implemented("Intensity"))
+        act_profile = measure_menu.addAction("Profile", lambda: self._show_not_implemented("Profile"))
 
         display_menu = menu_bar.addMenu("Display")
-        display_menu.addAction("Adjust", lambda: self._show_not_implemented("Adjust"))
-        display_menu.addAction("Metadata", lambda: self._show_not_implemented("Metadata"))
+        act_adjust = display_menu.addAction("Adjust", lambda: self._show_not_implemented("Adjust"))
+        act_metadata = display_menu.addAction("Metadata", lambda: self._show_not_implemented("Metadata"))
+
+        # Startup state: only File/Open and File/Parameters are enabled.
+        for action in (
+            act_save_view,
+            act_build_figure,
+            act_fft,
+            act_inverse_fft,
+            act_distance,
+            act_history,
+            act_intensity,
+            act_profile,
+            act_adjust,
+            act_metadata,
+            act_calibrate_image
+        ):
+            action.setEnabled(False)
+
+        act_open.setEnabled(True)
+        act_parameters.setEnabled(True)
 
     def _show_not_implemented(self, feature_name: str) -> None:
         QtWidgets.QMessageBox.information(
@@ -128,7 +148,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "Open Image",
             str(Path.cwd()),
-            "Image files (*.dm3 *.dm4 *.tif *.tiff *.mrc *.ser *.png *.jpg *.jpeg);;All files (*)",
+            "Image files (*.dm3 *.dm4 *.emi *.tif *.tiff *.mrc *.ser *.png *.jpg *.jpeg);;All files (*)",
         )
         if selected_file:
             self._open_image(selected_file)

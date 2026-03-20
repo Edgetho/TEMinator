@@ -102,6 +102,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.chk_inverse: Optional[QtWidgets.QCheckBox] = None
         self._inverse_action: Optional[QtWidgets.QAction] = None
         self.freq_axis_base_unit: str = "m"
+        self._calibration_status: str = "metadata"
+        self._manual_calibrated: bool = False
+        self._image_inverse_cache: Optional[np.ndarray] = None
 
         if self.view_mode == "fft":
             self._setup_fft_view()
@@ -156,12 +159,15 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         calibrated = self._apply_calibration_from_original_metadata()
         if not calibrated:
+            self._calibration_status = "uncalibrated"
             QtWidgets.QMessageBox.warning(
                 self,
                 "Calibration",
                 "This image could not be calibrated successfully from metadata; "
                 "using default pixel scaling instead.",
             )
+        else:
+            self._calibration_status = "metadata"
 
         # Decide whether this view should be treated as reciprocal space.
         # Prefer explicit metadata / axis units when available so that
@@ -180,6 +186,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.setup_ui()
         self.resize(*DEFAULT_IMAGE_WINDOW_SIZE)
+
 
     def _setup_fft_view(self):
         if self._fft_region is None:
@@ -270,6 +277,96 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return False
 
         return True
+
+
+    def _open_calibration_dialog(self) -> None:
+        if self.view_mode != "image" or self.ax_x is None or self.ax_y is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Parameters",
+                "Calibration parameters are only editable for image views.",
+            )
+            return
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Parameters")
+        layout = QtWidgets.QFormLayout(dialog)
+
+        unit_default = self.ax_x.units or "m"
+
+        edit_scale_x = QtWidgets.QLineEdit(f"{float(self.ax_x.scale):.12g}")
+        edit_scale_y = QtWidgets.QLineEdit(f"{float(self.ax_y.scale):.12g}")
+        edit_units = QtWidgets.QLineEdit(str(unit_default))
+
+        layout.addRow("Scale X (units/pixel):", edit_scale_x)
+        layout.addRow("Scale Y (units/pixel):", edit_scale_y)
+        layout.addRow("Units:", edit_units)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        try:
+            new_scale_x = float(edit_scale_x.text().strip())
+            new_scale_y = float(edit_scale_y.text().strip())
+            new_units = edit_units.text().strip() or "m"
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Parameters",
+                "Scale values must be valid numbers.",
+            )
+            return
+
+        if new_scale_x <= 0 or new_scale_y <= 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Parameters",
+                "Scale values must be greater than zero.",
+            )
+            return
+
+        self.ax_x.scale = new_scale_x
+        self.ax_y.scale = new_scale_y
+        self.ax_x.units = new_units
+        self.ax_y.units = new_units
+        self._manual_calibrated = True
+        self._calibration_status = "manual"
+        self.is_reciprocal_space = self._detect_reciprocal_space(self.signal)
+
+        x_offset, y_offset, w, h = self.image_bounds
+        if self.img_orig is not None:
+            self.img_orig.setRect(QtCore.QRectF(x_offset, y_offset, w, h))
+
+        if self.p1 is not None:
+            self.p1.setXRange(x_offset, x_offset + w, padding=0)
+            self.p1.setYRange(y_offset, y_offset + h, padding=0)
+
+        if self.scale_bar is not None:
+            self.scale_bar.units = new_units
+            self.scale_bar.reciprocal = self.is_reciprocal_space
+            if hasattr(self.scale_bar, "_update_geometry"):
+                self.scale_bar._update_geometry()
+
+        self._refresh_scale_bar_calibration_tag()
+
+    def _refresh_scale_bar_calibration_tag(self) -> None:
+        if self.scale_bar is None or not hasattr(self.scale_bar, "set_status_tag"):
+            return
+
+        if self._calibration_status == "uncalibrated":
+            self.scale_bar.set_status_tag("UNCALIBRATED")
+        elif self._calibration_status == "manual":
+            self.scale_bar.set_status_tag("manually calibrated")
+        else:
+            self.scale_bar.set_status_tag(None)
 
     def _detect_reciprocal_space(self, signal) -> bool:
         """Determine if the signal should be treated as reciprocal space.
@@ -397,6 +494,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.p1.setMenuEnabled(False)
 
         self.p1.vb.setAspectLocked(True, ratio=1.0)
+        if hasattr(self.p1.vb, "setBorder"):
+            self.p1.vb.setBorder(None)
 
         self.img_orig = pg.ImageItem(axisOrder="row-major")
         self.p1.addItem(self.img_orig)
@@ -438,6 +537,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
+            self._refresh_scale_bar_calibration_tag()
+
         self.line_tool = LineDrawingTool(self.p1, self._on_line_drawn)
 
         self.setup_keyboard_shortcuts()
@@ -477,8 +578,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 )
             return
 
+        display_data = self.data
+        if self.chk_inverse is not None and self.chk_inverse.isChecked() and self.data is not None:
+            if self._image_inverse_cache is None:
+                self._image_inverse_cache = np.abs(np.fft.ifft2(np.fft.ifftshift(self.data)))
+            display_data = self._image_inverse_cache
+
         adjusted = utils.apply_intensity_transform(
-            self.data,
+            display_data,
             self.display_min,
             self.display_max,
             self.display_gamma,
@@ -851,8 +958,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         act_build_figure = file_menu.addAction("Build Figure")
         act_build_figure.triggered.connect(lambda: self._show_not_implemented("Build Figure"))
 
+        act_calibrate_image = file_menu.addAction("Calibrate Image")
+        act_calibrate_image.triggered.connect(self._open_calibration_dialog)
+
         act_parameters = file_menu.addAction("Parameters")
-        act_parameters.triggered.connect(lambda: self._show_not_implemented("Parameters"))
+        act_parameters.triggered.connect(self._show_not_implemented("Parameters"))
 
         manipulate_menu = menu_bar.addMenu("Manipulate")
         act_fft = manipulate_menu.addAction("FFT")
@@ -860,12 +970,10 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         act_fft.setEnabled(self.view_mode == "image")
 
         act_inverse_fft = manipulate_menu.addAction("Inverse FFT")
-        if self.view_mode == "fft":
+        if self.view_mode in {"image", "fft"}:
             act_inverse_fft.setCheckable(True)
             act_inverse_fft.toggled.connect(self._on_inverse_fft_toggled)
             self._inverse_action = act_inverse_fft
-        else:
-            act_inverse_fft.setEnabled(False)
 
         measure_menu = menu_bar.addMenu("Measure")
         act_distance = measure_menu.addAction("Distance")
@@ -916,6 +1024,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.chk_inverse.blockSignals(True)
             self.chk_inverse.setChecked(checked)
             self.chk_inverse.blockSignals(False)
+        self.display_min = None
+        self.display_max = None
         self._update_image_display()
 
     def _save_view_and_ffts(self) -> None:
@@ -1346,7 +1456,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.selected_measurement_index = None
 
         if self.measurement_history_window is not None:
-            self.measurement_history_window.clear_all()
+            self.measurement_history_window.clear_all(notify_parent=False)
+
+    def clear_measurements_from_history(self):
+        for line_item, text_item in self.measurement_items:
+            self.p1.removeItem(line_item)
+            self.p1.removeItem(text_item)
+        self.measurement_items.clear()
+        self.selected_measurement_index = None
 
     def _delete_selected_measurement(self):
         if self.selected_measurement_index is None:
@@ -1389,7 +1506,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self, result: dict, measurement_id: Optional[int] = None
     ) -> str:
         if self.view_mode == "fft":
-            scaled_dist, scaled_unit = utils.format_si_scale(
+            scaled_dist, scaled_unit = utils.format_reciprocal_scale(
                 result["distance_physical"], self.freq_axis_base_unit
             )
             prefix = f"#{measurement_id} " if measurement_id is not None else ""
@@ -1403,15 +1520,20 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 f"({result['distance_pixels']:.1f} px)"
             )
 
-        scaled_dist, scaled_unit = utils.format_si_scale(
-            result["distance_physical"], self.ax_x.units
-        )
+        if self.is_reciprocal_space:
+            scaled_dist, scaled_unit = utils.format_reciprocal_scale(
+                result["distance_physical"], self.ax_x.units
+            )
+        else:
+            scaled_dist, scaled_unit = utils.format_si_scale(
+                result["distance_physical"], self.ax_x.units
+            )
         prefix = f"#{measurement_id} " if measurement_id is not None else ""
 
         if self.is_reciprocal_space and "d_spacing" in result:
             return (
                 f"{prefix}d: {result['d_spacing']:.4f} Å\n"
-                f"({scaled_dist:.4f} {scaled_unit}⁻¹)"
+                f"({scaled_dist:.4f} {scaled_unit})"
             )
         return (
             f"{prefix}{scaled_dist:.4f} {scaled_unit}\n"
@@ -1586,6 +1708,7 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
         exts = {
             ".dm3",
             ".dm4",
+            ".emi",
             ".tif",
             ".tiff",
             ".mrc",

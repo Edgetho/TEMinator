@@ -4,20 +4,28 @@
 Severe
 -------
 
-- The scaling of windows is limited by the width of the icons on the top bar
-- FFT views can change their pixel aspect ratio. All image views should be locked at 1:1
-- inverse FFT option not present for images symmetrically as for FFT displays
+- inverse FFT option should work exactly the same way as for the FFT option, except that once the bounding box is selected, it should display the inverse FFT instead of the FFT. the options to draw bounding boxes for new (inverse) FFTs should be the same for FFT view windows as for parent image windows. 
 - calibration errors do not fail loudly enough. When there is a failure of calibration, the scale bar should display UNCALIBRATED on it. there also needs to be a manual calibration option, which will display a tag like (manually calibrated) on it
 
 - distance measurement is not properly context aware for whether this is a real-space or reciprocal-space image (perhaps need to use metadata to extract this)
 
+- NOT FIXED: clearing measurements from the history pane does not remove annotations on the image, as it should. also there should not be a pop up confirmation dialogue after measurements are deleted.
+
+- on the inital opening screen, all options except for parameters and open file should be greyed out.
+
+- on opening an uncalibrated image, the request to calibrate should only open after the image has been opened
+
+- measurement mode no longer works after an FFT has been enabled.
+
+- There is no way to turn off distance measruement once it it turned on. There should be a status bar displayed at the bottom of the screen with the text "Measurement mode (esc to exit): {distance}" where distance stands for the current  mesurement values based on the instantaneous mouse position.
 
 ---
 Cosmetic
 -------
-- it's hard to navigate and windows have inconstent options even though the fundamental controls should be the same for all image data views
+
 - scale bars for reciprocal-space images should display in 1/nm etc instead of G1/m etc for conformation with convention
 
+- change the black bounding boxes to zero pixels wide on the image view screen
 
 
 
@@ -34,7 +42,7 @@ Desired features
 - publication style figure generator
 
 ---
-Desired UI/UX improvements
+Desired UI/UX
 ------
 
 Have consistent controls for all image viewers (i.e. for FFTs and direct images -- perhaps refactor code for this to make addition of image manipulation extensible in the future)
@@ -44,15 +52,17 @@ Have consistent controls for all image viewers (i.e. for FFTs and direct images 
 | File  | Open | Ctrl+O |
 |       | Save View | Ctrl+S |
 |       | Build Figure | Ctrl+B |
+|       | Metadata | M |
+|       | Calibrate | |
 |       | Parameters | Ctrl+, |
 | Manipulate | FFT | Ctrl+F |
 |       | Inverse FFT | Ctrl+Shift+F |
+|       | Adjust Display | A|
 | Measure | Distance | D |
 |       | History | H |
 |       | Intensity | I |
 |       | Profile | P |
-| Display | Adjust | A |
-|       | Metadata | M |
+
 
 
 New startup flow:
@@ -69,3 +79,4 @@ open a window that looks like the others and has the same menu bar across the to
 "<p style='margin:6px 0 0 0;'>&copy; 2026 Cooper Stuntz</p>"
 "</div>"
 ```
+All options except for File Open and File Parameters should be greyed out upon startup.

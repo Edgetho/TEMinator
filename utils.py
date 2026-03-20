@@ -55,6 +55,72 @@ def format_si_scale(value: float, base_unit: str = '', precision: int = 3) -> Tu
     return scaled, unit_str
 
 
+def format_reciprocal_scale(value: float, axis_unit: str = "m") -> Tuple[float, str]:
+    """Format reciprocal-space values with denominator-style SI units.
+
+    Examples:
+    - values in 1/m are displayed as 1/nm when appropriate
+    - values in 1/nm can be displayed as 1/Å when appropriate
+    """
+
+    if value == 0 or not np.isfinite(value):
+        denom = axis_unit or "m"
+        if isinstance(denom, str) and denom.startswith("1/"):
+            denom = denom[2:]
+        return value, f"1/{denom}"
+
+    unit_text = (axis_unit or "m").strip()
+    reciprocal_markers = ("1/", "^-1", "⁻¹", "-1")
+
+    if unit_text.startswith("1/"):
+        denom_unit = unit_text[2:]
+    elif unit_text.endswith("^-1"):
+        denom_unit = unit_text[:-3]
+    elif unit_text.endswith("⁻¹"):
+        denom_unit = unit_text[:-2]
+    elif unit_text.endswith("-1"):
+        denom_unit = unit_text[:-2]
+    elif any(marker in unit_text for marker in reciprocal_markers):
+        # Fallback for uncommon reciprocal formats containing markers.
+        denom_unit = unit_text.replace("1/", "").replace("^-1", "").replace("⁻¹", "").replace("-1", "")
+    else:
+        # If this is a spatial unit, we still treat the incoming value as reciprocal.
+        denom_unit = unit_text
+
+    denom_unit = denom_unit.strip() or "m"
+
+    abs_value = abs(value)
+    best = None
+
+    for factor, prefix in SI_PREFIXES:
+        scaled = value * factor
+        abs_scaled = abs(scaled)
+
+        if abs_scaled < 0.95 or abs_scaled >= 1000:
+            continue
+
+        score = abs(np.log10(abs_scaled))
+        if best is None or score < best[0]:
+            best = (score, scaled, prefix)
+
+    if best is None:
+        # Fall back to the closest scale in log space.
+        for factor, prefix in SI_PREFIXES:
+            scaled = value * factor
+            abs_scaled = abs(scaled)
+            if abs_scaled <= 0 or not np.isfinite(abs_scaled):
+                continue
+            score = abs(np.log10(abs_scaled))
+            if best is None or score < best[0]:
+                best = (score, scaled, prefix)
+
+    if best is None:
+        return value, f"1/{denom_unit}"
+
+    _score, scaled_value, chosen_prefix = best
+    return float(scaled_value), f"1/{chosen_prefix}{denom_unit}"
+
+
 def _get_hanning_window(shape: Tuple[int, int]) -> np.ndarray:
     """Get or create a cached Hanning window of specified shape."""
     if shape not in _window_cache:

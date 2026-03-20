@@ -313,7 +313,14 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
         self.selected_measurement_index = None
 
         if self.measurement_history_window is not None:
-            self.measurement_history_window.clear_all()
+            self.measurement_history_window.clear_all(notify_parent=False)
+
+    def clear_measurements_from_history(self):
+        for line_item, text_item in self.measurement_items:
+            self.plot.removeItem(line_item)
+            self.plot.removeItem(text_item)
+        self.measurement_items.clear()
+        self.selected_measurement_index = None
 
     def _delete_selected_measurement(self):
         if self.selected_measurement_index is None:
@@ -355,7 +362,7 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
     def _format_measurement_label(
         self, result: dict, measurement_id: Optional[int] = None
     ) -> str:
-        scaled_dist, scaled_unit = utils.format_si_scale(
+        scaled_dist, scaled_unit = utils.format_reciprocal_scale(
             result["distance_physical"], self.freq_axis_base_unit
         )
         prefix = f"#{measurement_id} " if measurement_id is not None else ""
@@ -363,10 +370,10 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
         if "d_spacing" in result:
             return (
                 f"{prefix}d: {result['d_spacing']:.4f} Å\n"
-                f"({scaled_dist:.4f} {scaled_unit}⁻¹)"
+                f"({scaled_dist:.4f} {scaled_unit})"
             )
         return (
-            f"{prefix}{scaled_dist:.4f} {scaled_unit}⁻¹\n"
+            f"{prefix}{scaled_dist:.4f} {scaled_unit}\n"
             f"({result['distance_pixels']:.1f} px)"
         )
 

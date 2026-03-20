@@ -116,6 +116,7 @@ class DynamicScaleBar(pg.GraphicsObject):
     _label_text = ""
     _rect = QtCore.QRectF()
     _extra_label: Optional[str] = None
+    _status_tag: Optional[str] = None
 
     def __init__(
         self,
@@ -140,6 +141,7 @@ class DynamicScaleBar(pg.GraphicsObject):
         self._label_text = ""
         self._rect = QtCore.QRectF()
         self._extra_label: str | None = None
+        self._status_tag: str | None = None
 
         # Keep this item fixed in screen space
         self.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
@@ -163,6 +165,13 @@ class DynamicScaleBar(pg.GraphicsObject):
         # Normalize empty strings to None
         clean = text.strip() if isinstance(text, str) else None
         self._extra_label = clean or None
+        self.update()
+
+    def set_status_tag(self, text: str | None) -> None:
+        """Set a persistent status tag appended to the scale-bar label."""
+
+        clean = text.strip() if isinstance(text, str) else None
+        self._status_tag = clean or None
         self.update()
 
     def _choose_length(
@@ -231,12 +240,13 @@ class DynamicScaleBar(pg.GraphicsObject):
         target_val = target_px * world_per_px
         length_val, bar_px = self._choose_length(target_val, world_per_px, width_px)
 
-        scaled, unit_str = utils.format_si_scale(length_val, self.units)
+        if self.reciprocal:
+            scaled, unit_str = utils.format_reciprocal_scale(length_val, self.units)
+        else:
+            scaled, unit_str = utils.format_si_scale(length_val, self.units)
+
         if unit_str:
-            if self.reciprocal:
-                label = f"{scaled:.3g} {unit_str}\N{SUPERSCRIPT MINUS}1"
-            else:
-                label = f"{scaled:.3g} {unit_str}"
+            label = f"{scaled:.3g} {unit_str}"
         else:
             label = f"{scaled:.3g}"
 
@@ -271,7 +281,10 @@ class DynamicScaleBar(pg.GraphicsObject):
         font = QtGui.QFont()
         font.setPointSize(8)
         p.setFont(font)
-        p.drawText(0, -int(cap) - 3, self._label_text)
+        label_text = self._label_text
+        if self._status_tag:
+            label_text = f"{label_text} ({self._status_tag})"
+        p.drawText(0, -int(cap) - 3, label_text)
 
         # Optional extra label (e.g. file name and ROI number) drawn above
         # the standard scale-bar label. Kept in the same red color.

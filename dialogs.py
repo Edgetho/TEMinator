@@ -52,11 +52,15 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         self.measurements.append(measurement_text)
         self.list_widget.scrollToBottom()
 
-    def clear_all(self):
+    def clear_all(self, notify_parent: bool = True):
         """Clear all measurements."""
         self.list_widget.clear()
         self.measurements.clear()
-        QtWidgets.QMessageBox.information(self, "Cleared", "All measurements cleared!")
+
+        if notify_parent:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "clear_measurements_from_history"):
+                parent.clear_measurements_from_history()
 
     def delete_selected(self):
         """Delete the currently selected measurement from history."""
