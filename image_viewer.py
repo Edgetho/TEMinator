@@ -18,6 +18,13 @@ from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 import utils
 import unit_utils
 from command_utils import enter_command_mode, exit_command_mode, parse_command_input
+from utils import (
+    show_about_dialog,
+    show_keyboard_shortcuts_dialog,
+    show_readme_dialog,
+    open_parameters_dialog,
+    open_file_dialog,
+)
 from dialogs import (
     MeasurementHistoryWindow,
     LineProfileWindow,
@@ -50,6 +57,7 @@ from viewer_settings import (
     global_render_config_options,
     hardware_acceleration_available,
 )
+from menu_manager import MenuBuilder, MenuItemConfig, create_shared_menu_config
 
 
 FFT_COLORS = ["r", "g", "b", "y", "c", "m"]
@@ -1240,6 +1248,40 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self._apply_colormap()
 
+    def _cycle_colormap_forward(self) -> None:
+        """Cycle to the next colormap in the list.
+        
+        Triggered by the + key. Keyboard shortcut for quick colormap navigation.
+        """
+        if not self._available_colormaps:
+            return
+        
+        self._current_colormap_index = (self._current_colormap_index + 1) % len(self._available_colormaps)
+        current_cmap = self._available_colormaps[self._current_colormap_index]
+        
+        if self.btn_colormap is not None:
+            self.btn_colormap.setText(f"Colormap: {current_cmap}")
+        
+        self._apply_colormap()
+        logger.debug(f"Colormap cycled forward to: {current_cmap}")
+
+    def _cycle_colormap_backward(self) -> None:
+        """Cycle to the previous colormap in the list.
+        
+        Triggered by the - key. Keyboard shortcut for quick colormap navigation.
+        """
+        if not self._available_colormaps:
+            return
+        
+        self._current_colormap_index = (self._current_colormap_index - 1) % len(self._available_colormaps)
+        current_cmap = self._available_colormaps[self._current_colormap_index]
+        
+        if self.btn_colormap is not None:
+            self.btn_colormap.setText(f"Colormap: {current_cmap}")
+        
+        self._apply_colormap()
+        logger.debug(f"Colormap cycled backward to: {current_cmap}")
+
     def _refresh_transform_data(self):
         logger.debug(
             "Refreshing transform data: mode=%s source_shape=%s last_region_id=%s",
@@ -1444,57 +1486,58 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.fft_manager.delete_selected_roi()
 
     def _setup_menu_bar(self) -> None:
-        menu_bar = self.menuBar()
-        menu_bar.clear()
+        # Get the comprehensive menu configuration
+        config = create_shared_menu_config()
+        
+        # Create callbacks mapping for this window
+        callbacks_map = {
+            "Open": self._open_file_dialog,
+            "Save View": self._save_view_and_ffts,
+            "Build Figure": lambda: self._show_not_implemented("Build Figure"),
+            "Calibrate": self._open_calibration_dialog,
+            "Parameters": self._open_parameters_dialog,
+            "FFT": lambda _checked=False: self._add_new_fft(),
+            "Inverse FFT": lambda _checked=False: self._add_new_inverse_fft(),
+            "Distance": self._menu_start_distance_measurement,
+            "History": self._show_measurement_history,
+            "Intensity": lambda: self._show_not_implemented("Intensity"),
+            "Profile": self._menu_start_profile_measurement,
+            "Metadata": self._show_metadata_window,
+            "Render Diagnostics": self._show_render_diagnostics,
+            "Cycle Colormap Forward": self._cycle_colormap_forward,
+            "Cycle Colormap Backward": self._cycle_colormap_backward,
+            "Keyboard Shortcuts": self._show_keyboard_shortcuts,
+            "About": self._show_about_dialog,
+            "README": self._show_readme,
+        }
+        
+        # Update config with actual callbacks
+        for item in config:
+            if item.title in callbacks_map:
+                item.callback = callbacks_map[item.title]
+        
+        # Determine if an image is available for this viewer
+        image_available = self.view_mode == "image" or (
+            hasattr(self, 'data') and self.data is not None
+        )
+        
+        # Build menus using the builder
+        self.menu_builder = MenuBuilder(self, logger)
+        self.menu_builder.build_from_config(config, image_available=image_available)
+        
+        # Add Colormap submenu with individual colormap options to the Display menu
+        if "Display" in self.menu_builder.menus:
+            display_menu = self.menu_builder.menus["Display"]
+            colormap_submenu = display_menu.addMenu("Colormap")
+            for cmap_name in self._available_colormaps:
+                action = colormap_submenu.addAction(cmap_name.capitalize())
+                action.triggered.connect(
+                    lambda checked=False, name=cmap_name: self._set_colormap_by_name(name)
+                )
+                logger.debug(f"Added colormap menu item: {cmap_name}")
+        
+        logger.debug("Image viewer menu bar setup complete with keyboard shortcuts and colormap menu")
 
-        file_menu = menu_bar.addMenu("File")
-        act_open = file_menu.addAction("Open")
-        act_open.triggered.connect(self._open_file_dialog)
-
-        act_save_view = file_menu.addAction("Save View")
-        act_save_view.triggered.connect(self._save_view_and_ffts)
-
-        act_build_figure = file_menu.addAction("Build Figure")
-        act_build_figure.triggered.connect(lambda: self._show_not_implemented("Build Figure"))
-
-        act_calibrate_image = file_menu.addAction("Calibrate Image")
-        act_calibrate_image.triggered.connect(self._open_calibration_dialog)
-
-        act_parameters = file_menu.addAction("Parameters")
-        act_parameters.triggered.connect(self._open_parameters_dialog)
-
-        manipulate_menu = menu_bar.addMenu("Manipulate")
-        act_fft = manipulate_menu.addAction("FFT")
-        act_fft.triggered.connect(lambda _checked=False: self._add_new_fft())
-        act_fft.setEnabled(self.view_mode == "image")
-
-        act_inverse_fft = manipulate_menu.addAction("Inverse FFT")
-        act_inverse_fft.triggered.connect(lambda _checked=False: self._add_new_inverse_fft())
-        act_inverse_fft.setEnabled(self.view_mode == "image")
-
-        measure_menu = menu_bar.addMenu("Measure")
-        act_distance = measure_menu.addAction("Distance")
-        act_distance.triggered.connect(self._menu_start_distance_measurement)
-
-        act_history = measure_menu.addAction("History")
-        act_history.triggered.connect(self._show_measurement_history)
-
-        act_intensity = measure_menu.addAction("Intensity")
-        act_intensity.triggered.connect(lambda: self._show_not_implemented("Intensity"))
-
-        act_profile = measure_menu.addAction("Profile")
-        act_profile.triggered.connect(self._menu_start_profile_measurement)
-
-        display_menu = menu_bar.addMenu("Display")
-        act_adjust = display_menu.addAction("Adjust")
-        act_adjust.triggered.connect(self._open_adjust_dialog)
-
-        act_render_diag = display_menu.addAction("Render Diagnostics")
-        act_render_diag.triggered.connect(self._show_render_diagnostics)
-
-        act_metadata = display_menu.addAction("Metadata")
-        act_metadata.triggered.connect(self._show_metadata_window)
-        act_metadata.setEnabled(self.view_mode == "image")
 
     def _show_not_implemented(self, feature_name: str) -> None:
         QtWidgets.QMessageBox.information(
@@ -1502,6 +1545,33 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
+
+    def _show_keyboard_shortcuts(self) -> None:
+        """Display keyboard shortcuts help dialog."""
+        config = create_shared_menu_config()
+        
+        extra_shortcuts = {
+            "Enter command mode": ":",
+            "Exit command mode": "Esc",
+            "Delete selected ROI": "Delete",
+        }
+        
+        show_keyboard_shortcuts_dialog(
+            self,
+            config,
+            extra_shortcuts,
+            additional_colormaps=self._available_colormaps
+        )
+
+    def _show_readme(self) -> None:
+        """Display README content in a scrollable dialog."""
+        show_readme_dialog(self)
+
+    def _show_about_dialog(self) -> None:
+        """Display the About dialog with app information."""
+        show_about_dialog(self)
+        logger.debug("Requested about dialog")
+
 
     def _show_render_diagnostics(self) -> None:
         gl_available = hardware_acceleration_available(force_refresh=True)
@@ -1569,46 +1639,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _open_parameters_dialog(self) -> None:
         current = load_render_settings()
-        dialog = RenderSettingsDialog(self, current=current)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        updated = open_parameters_dialog(self, current)
+        if updated is None:
             return
 
-        updated = dialog.selected_settings()
         save_render_settings(updated)
-
-        previous_hw = bool(current.get("use_hardware_acceleration", True))
-        updated_hw = bool(updated.get("use_hardware_acceleration", True))
-        gl_available = hardware_acceleration_available()
-
         self._render_settings = updated
+        gl_available = hardware_acceleration_available()
         pg.setConfigOptions(
             **global_render_config_options(updated, hardware_available=gl_available)
         )
         self._apply_render_preferences_to_view()
         self._update_image_display()
 
-        if updated_hw and not gl_available:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Parameters",
-                "Hardware acceleration is enabled in settings, but no OpenGL context is available on this system/session. "
-                "This window will use non-OpenGL rendering until hardware OpenGL becomes available.",
-            )
-        elif previous_hw != updated_hw:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Parameters",
-                "Hardware acceleration backend change will apply fully to newly opened windows.",
-            )
-
     def _open_file_dialog(self) -> None:
         start_dir = str(Path(self.file_path).parent) if self.file_path else str(Path.cwd())
-        selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Open Image",
-            start_dir,
-            IMAGE_FILE_FILTER,
-        )
+        selected_file = open_file_dialog(self, start_dir)
         if selected_file:
             open_image_file(selected_file)
 

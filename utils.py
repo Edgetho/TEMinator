@@ -2,17 +2,313 @@
 # Copyright (C) 2026 Cooper Stuntz
 # See LICENSE for full license terms.
 
-"""Utility functions for FFT, measurements, and image analysis."""
+"""Utility functions for FFT, measurements, image analysis, and dialogs."""
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List, Dict
+import subprocess
+import os
+import logging
+from pathlib import Path
 
 import unit_utils
+from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+
+logger = logging.getLogger(__name__)
 
 
 # Cache for window functions to avoid recomputation
 _window_cache = {}
 
-# SI prefix conversions
+
+def get_git_commit_date() -> str:
+    """
+    Get the commit date of the current git branch.
+    
+    Deprecated: Use get_git_commit_info() instead.
+    
+    Returns:
+        A string with the commit date in format "YYYY-MM-DD" or "Version 1.0" if git info unavailable
+    """
+    commit_date, _, _ = get_git_commit_info()
+    return commit_date
+
+
+def get_git_commit_info() -> Tuple[str, str, str]:
+    """
+    Get the commit date, short hash, and branch of the current git branch.
+    
+    Returns:
+        A tuple of (commit_date, short_hash, branch_name) where commit_date is in format "YYYY-MM-DD"
+        Falls back to ("Version 1.0", "", "") if git info unavailable
+    """
+    try:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        result = subprocess.run(
+            ['git', 'log', '-1', '--format=%cI %h %D'],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts = result.stdout.strip().split(maxsplit=2)
+            if len(parts) >= 2:
+                # Extract date part from ISO format (YYYY-MM-DDTHH:MM:SS+ZZ:ZZ)
+                commit_date = parts[0].split('T')[0]
+                short_hash = parts[1]
+                branch_name = ""
+                if len(parts) >= 3:
+                    decorations = parts[2]
+                    if "HEAD -> " in decorations:
+                        head_part = decorations.split("HEAD -> ", 1)[1]
+                        branch_name = head_part.split(",", 1)[0].strip()
+                    elif "origin/" in decorations:
+                        origin_part = decorations.split("origin/", 1)[1]
+                        branch_name = origin_part.split(",", 1)[0].strip()
+                return commit_date, short_hash, branch_name
+    except Exception:
+        pass
+    
+    return "Version 1.0", "", ""
+
+
+def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
+    """
+    Display the About TEMinator dialog.
+    
+    Args:
+        parent_widget: The parent widget for the dialog
+    """
+    commit_date, short_hash, branch_name = get_git_commit_info()
+    version_str = commit_date
+    if short_hash:
+        version_str += f" ({short_hash})"
+    if branch_name:
+        version_str += f" [{branch_name}]"
+    
+    about_text = (
+        "<b>TEMinator</b><br>"
+        f"{version_str}<br>"
+        "<br>"
+        "Desktop viewer for electron microscopy images with fast, "
+        "interactive FFT analysis, distance measurements, and "
+        "metadata-aware scaling.<br>"
+        "<br>"
+        "<b>Copyright:</b> © 2026 Cooper Stuntz<br>"
+        "<b>License:</b> GNU General Public License v2.0<br>"
+        "<br>"
+        "<a href='https://github.com/Edgetho/TEMinator'>GitHub Repository</a>"
+    )
+    
+    dialog = QtWidgets.QDialog(parent_widget)
+    dialog.setWindowTitle("About TEMinator")
+    dialog.setSizeGripEnabled(False)
+    
+    main_layout = QtWidgets.QVBoxLayout()
+    main_layout.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
+    
+    # Top layout with icon and text
+    top_layout = QtWidgets.QHBoxLayout()
+    
+    # Add app icon on the left
+    icon_label = QtWidgets.QLabel()
+    icon_pixmap = QtGui.QPixmap("app_icon.png")
+    if not icon_pixmap.isNull():
+        icon_label.setPixmap(icon_pixmap.scaledToWidth(80, QtCore.Qt.SmoothTransformation))
+        top_layout.addWidget(icon_label)
+    
+    # Add text on the right
+    text_label = QtWidgets.QLabel(about_text)
+    text_label.setOpenExternalLinks(True)
+    text_label.setTextFormat(QtCore.Qt.RichText)
+    text_label.setWordWrap(True)
+    text_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+    top_layout.addWidget(text_label)
+    
+    main_layout.addLayout(top_layout)
+    
+    # Add close button
+    button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+    button_box.rejected.connect(dialog.close)
+    main_layout.addWidget(button_box)
+    
+    dialog.setLayout(main_layout)
+    dialog.adjustSize()
+    dialog.exec_()
+    logger.debug("Displayed About dialog")
+
+
+def show_keyboard_shortcuts_dialog(
+    parent_widget: QtWidgets.QWidget,
+    menu_config: List,
+    extra_shortcuts: Optional[Dict[str, str]] = None,
+    additional_colormaps: Optional[List[str]] = None,
+) -> None:
+    """
+    Display keyboard shortcuts dialog.
+    
+    This is a centralized dialog for showing all keyboard shortcuts, with
+    support for additional shortcuts and colormaps specific to certain windows.
+    
+    Args:
+        parent_widget: The parent widget for the dialog
+        menu_config: Menu configuration list from create_shared_menu_config()
+        extra_shortcuts: Optional dict of extra keyboard shortcuts not in main menu
+        additional_colormaps: Optional list of colormap names to display
+    """
+    from menu_manager import generate_keyboard_shortcuts_text
+    
+    shortcuts_text = generate_keyboard_shortcuts_text(menu_config, extra_shortcuts)
+    
+    # Add colormaps if provided
+    if additional_colormaps:
+        shortcuts_text += "\nDisplay > Colormap (Submenu):\n"
+        for cmap in additional_colormaps:
+            shortcuts_text += f"  {cmap.capitalize():<25} (via menu)\n"
+    
+    logger.debug("Displaying keyboard shortcuts dialog")
+    
+    dialog = QtWidgets.QMessageBox(parent_widget)
+    dialog.setWindowTitle("Keyboard Shortcuts")
+    dialog.setText(shortcuts_text)
+    dialog.setFont(QtGui.QFont("Monospace", 9))
+    dialog.exec_()
+
+
+def show_readme_dialog(parent_widget: QtWidgets.QWidget) -> None:
+    """
+    Display README content in a scrollable dialog.
+    
+    This is a centralized dialog for displaying the README file.
+    
+    Args:
+        parent_widget: The parent widget for the dialog
+    """
+    readme_path = Path(__file__).parent / "README.md"
+    
+    if not readme_path.exists():
+        QtWidgets.QMessageBox.warning(
+            parent_widget,
+            "README",
+            f"README file not found at {readme_path}",
+        )
+        logger.warning(f"README file not found: {readme_path}")
+        return
+    
+    try:
+        with open(readme_path, "r") as f:
+            readme_content = f.read()
+        
+        # Create a proper dialog with scrollable text
+        dialog = QtWidgets.QDialog(parent_widget)
+        dialog.setWindowTitle("README")
+        dialog.resize(800, 600)
+        
+        layout = QtWidgets.QVBoxLayout()
+        
+        # Use QTextEdit for scrollable content
+        text_edit = QtWidgets.QTextEdit()
+        text_edit.setPlainText(readme_content)
+        text_edit.setReadOnly(True)
+        text_edit.setFont(QtGui.QFont("Monospace", 9))
+        layout.addWidget(text_edit)
+        
+        # Add close button
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        button_box.rejected.connect(dialog.close)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        logger.debug("Displayed README content in scrollable dialog")
+    except Exception as e:
+        QtWidgets.QMessageBox.warning(
+            parent_widget,
+            "README",
+            f"Error reading README: {e}",
+        )
+        logger.error(f"Error reading README: {e}")
+
+
+def open_parameters_dialog(
+    parent_widget: QtWidgets.QWidget,
+    current_settings: Dict,
+    on_backend_available: bool = True,
+) -> Optional[Dict]:
+    """
+    Display render parameters dialog and return updated settings if accepted.
+    
+    This is a centralized dialog for adjusting render settings. The caller
+    is responsible for applying the settings if a dict is returned.
+    
+    Args:
+        parent_widget: The parent widget for the dialog
+        current_settings: Current render settings dict
+        on_backend_available: Whether OpenGL backend is available
+        
+    Returns:
+        Updated settings dict if user clicked OK, None otherwise
+    """
+    from dialogs import RenderSettingsDialog
+    from viewer_settings import hardware_acceleration_available
+    
+    dialog = RenderSettingsDialog(parent_widget, current=current_settings)
+    if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        return None
+    
+    updated = dialog.selected_settings()
+    
+    # Show warnings if applicable
+    gl_available = hardware_acceleration_available()
+    updated_hw = bool(updated.get("use_hardware_acceleration", True))
+    current_hw = bool(current_settings.get("use_hardware_acceleration", True))
+    
+    if updated_hw and not gl_available:
+        QtWidgets.QMessageBox.warning(
+            parent_widget,
+            "Parameters",
+            "Hardware acceleration is enabled in settings, but no OpenGL context is available on this system/session. "
+            "The viewer will use non-OpenGL rendering until hardware OpenGL becomes available.",
+        )
+    elif current_hw != updated_hw:
+        QtWidgets.QMessageBox.information(
+            parent_widget,
+            "Parameters",
+            "Hardware acceleration backend change will apply fully to newly opened windows.",
+        )
+    
+    return updated
+
+
+def open_file_dialog(
+    parent_widget: QtWidgets.QWidget,
+    start_dir: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Display file open dialog and return selected file path.
+    
+    This is a centralized dialog for opening image files.
+    
+    Args:
+        parent_widget: The parent widget for the dialog
+        start_dir: Starting directory (None = current working directory)
+        
+    Returns:
+        Selected file path if user clicked OK, None otherwise
+    """
+    from file_navigation import IMAGE_FILE_FILTER
+    
+    if start_dir is None:
+        start_dir = str(Path.cwd())
+    
+    selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+        parent_widget,
+        "Open Image",
+        start_dir,
+        IMAGE_FILE_FILTER,
+    )
+    
+    return selected_file if selected_file else None
 SI_PREFIXES = [
     (1e9, 'G'),
     (1e6, 'M'),

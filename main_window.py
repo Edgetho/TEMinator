@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pyqtgraph as pg
@@ -18,12 +19,22 @@ from file_navigation import (
 )
 from image_loader import open_image_file
 from main_window_commands import MainWindowCommandRouter
+from menu_manager import MenuBuilder, MenuItemConfig, create_shared_menu_config
+from utils import (
+    show_about_dialog,
+    show_keyboard_shortcuts_dialog,
+    show_readme_dialog,
+    open_parameters_dialog,
+    open_file_dialog,
+)
 from viewer_settings import (
     load_render_settings,
     save_render_settings,
     global_render_config_options,
     hardware_acceleration_available,
 )
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAIN_WINDOW_SIZE = (600, 400)
@@ -84,49 +95,43 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.command_edit)
 
     def _setup_menu_bar(self) -> None:
-        menu_bar = self.menuBar()
-        menu_bar.clear()
+        # Get the comprehensive menu configuration
+        config = create_shared_menu_config()
+        
+        # Create callbacks mapping for this window
+        callbacks_map = {
+            "Open": self._open_file_dialog,
+            "Parameters": self._open_parameters_dialog,
+            "Keyboard Shortcuts": self._show_keyboard_shortcuts,
+            "About": self._show_about_dialog,
+            "README": self._show_readme,
+            "Save View": lambda: self._show_not_implemented("Save View"),
+            "Build Figure": lambda: self._show_not_implemented("Build Figure"),
+            "Calibrate": lambda: self._show_not_implemented("Calibrate"),
+            "FFT": lambda: self._show_not_implemented("FFT"),
+            "Inverse FFT": lambda: self._show_not_implemented("Inverse FFT"),
+            "Distance": lambda: self._show_not_implemented("Distance"),
+            "History": lambda: self._show_not_implemented("History"),
+            "Intensity": lambda: self._show_not_implemented("Intensity"),
+            "Profile": lambda: self._show_not_implemented("Profile"),
+            "Metadata": lambda: self._show_not_implemented("Metadata"),
+            "Render Diagnostics": lambda: self._show_not_implemented("Render Diagnostics"),
+            "Cycle Colormap Forward": lambda: self._show_not_implemented("Cycle Colormap Forward"),
+            "Cycle Colormap Backward": lambda: self._show_not_implemented("Cycle Colormap Backward"),
+        }
+        
+        # Update config with actual callbacks
+        for item in config:
+            if item.title in callbacks_map:
+                item.callback = callbacks_map[item.title]
+        
+        # Build menus using the builder - no image is available in main window
+        # The MenuBuilder will automatically grey out items that require_image
+        self.menu_builder = MenuBuilder(self, logger)
+        self.menu_builder.build_from_config(config, image_available=False)
+        
+        logger.debug("Main window menu bar setup complete with keyboard shortcuts")
 
-        file_menu = menu_bar.addMenu("File")
-        act_open = file_menu.addAction("Open")
-        act_open.triggered.connect(self._open_file_dialog)
-        act_save_view = file_menu.addAction("Save View", lambda: self._show_not_implemented("Save View"))
-        act_build_figure = file_menu.addAction("Build Figure", lambda: self._show_not_implemented("Build Figure"))
-        act_calibrate_image = file_menu.addAction("Calibrate Image", lambda: self._show_not_implemented("Calibrate Image"))
-        act_parameters = file_menu.addAction("Parameters")
-        act_parameters.triggered.connect(self._open_parameters_dialog)
-
-        manipulate_menu = menu_bar.addMenu("Manipulate")
-        act_fft = manipulate_menu.addAction("FFT", lambda: self._show_not_implemented("FFT"))
-        act_inverse_fft = manipulate_menu.addAction("Inverse FFT", lambda: self._show_not_implemented("Inverse FFT"))
-
-        measure_menu = menu_bar.addMenu("Measure")
-        act_distance = measure_menu.addAction("Distance", lambda: self._show_not_implemented("Distance"))
-        act_history = measure_menu.addAction("History", lambda: self._show_not_implemented("History"))
-        act_intensity = measure_menu.addAction("Intensity", lambda: self._show_not_implemented("Intensity"))
-        act_profile = measure_menu.addAction("Profile", lambda: self._show_not_implemented("Profile"))
-
-        display_menu = menu_bar.addMenu("Display")
-        act_adjust = display_menu.addAction("Adjust", lambda: self._show_not_implemented("Adjust"))
-        act_metadata = display_menu.addAction("Metadata", lambda: self._show_not_implemented("Metadata"))
-
-        for action in (
-            act_save_view,
-            act_build_figure,
-            act_fft,
-            act_inverse_fft,
-            act_distance,
-            act_history,
-            act_intensity,
-            act_profile,
-            act_adjust,
-            act_metadata,
-            act_calibrate_image,
-        ):
-            action.setEnabled(False)
-
-        act_open.setEnabled(True)
-        act_parameters.setEnabled(True)
 
     def _show_not_implemented(self, feature_name: str) -> None:
         QtWidgets.QMessageBox.information(
@@ -134,6 +139,25 @@ class MainWindow(QtWidgets.QMainWindow):
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
+
+    def _show_keyboard_shortcuts(self) -> None:
+        """Display keyboard shortcuts help dialog."""
+        config = create_shared_menu_config()
+        extra_shortcuts = {
+            "Enter command mode": ":",
+            "Exit command mode": "Esc",
+        }
+        show_keyboard_shortcuts_dialog(self, config, extra_shortcuts)
+
+    def _show_readme(self) -> None:
+        """Display README content in a scrollable dialog."""
+        show_readme_dialog(self)
+
+    def _show_about_dialog(self) -> None:
+        """Display the About dialog with app information."""
+        show_about_dialog(self)
+        logger.debug("Requested about dialog")
+
 
     def _render_status_text(self) -> str:
         quality = str(self._render_settings.get("image_resampling_quality", "high")).strip().lower()
@@ -154,11 +178,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_parameters_dialog(self) -> None:
         current = load_render_settings()
-        dialog = RenderSettingsDialog(self, current=current)
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        updated = open_parameters_dialog(self, current)
+        if updated is None:
             return
 
-        updated = dialog.selected_settings()
         save_render_settings(updated)
         gl_available = hardware_acceleration_available()
         pg.setConfigOptions(
@@ -167,27 +190,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._render_settings = updated
         self._update_render_status_indicator()
 
-        if bool(updated.get("use_hardware_acceleration", True)) and not gl_available:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Parameters",
-                "Hardware acceleration is enabled in settings, but no OpenGL context is available on this system/session. "
-                "The viewer will use non-OpenGL rendering until hardware OpenGL becomes available.",
-            )
-        elif bool(current.get("use_hardware_acceleration", True)) != bool(updated.get("use_hardware_acceleration", True)):
-            QtWidgets.QMessageBox.information(
-                self,
-                "Parameters",
-                "Hardware acceleration backend change will apply fully to newly opened windows.",
-            )
-
     def _open_file_dialog(self) -> None:
-        selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Open Image",
-            str(Path.cwd()),
-            IMAGE_FILE_FILTER,
-        )
+        selected_file = open_file_dialog(self, str(Path.cwd()))
         if selected_file:
             self._open_image(selected_file)
 
