@@ -54,12 +54,14 @@ class MeasurementController:
 
     def exit_measure_mode(self) -> None:
         viewer = self.viewer
+        self.logger.debug("Exiting measurement mode (line_draw_mode=%s)", viewer._line_draw_mode)
         if viewer._line_draw_mode == "calibration":
             viewer._line_draw_mode = "measurement"
             viewer._on_calibration_pixels_selected = None
             state = dict(viewer._calibration_dialog_state or {})
             viewer._calibration_dialog_state = None
             if state:
+                self.logger.debug("Restoring calibration dialog with pending state")
                 QtCore.QTimer.singleShot(0, lambda: viewer._open_calibration_dialog(state))
 
         if viewer.btn_measure is not None and viewer.btn_measure.isChecked():
@@ -69,10 +71,12 @@ class MeasurementController:
             viewer.line_tool.disable()
         if viewer.btn_measure is not None:
             viewer.btn_measure.setStyleSheet("")
+        self.logger.debug("Measurement mode exited")
 
     def toggle_line_measurement(self) -> None:
         viewer = self.viewer
         if viewer.line_tool is None:
+            self.logger.debug("Ignoring measurement toggle: line tool is unavailable")
             return
 
         if viewer.btn_measure is not None and viewer.btn_measure.isChecked():
@@ -80,13 +84,16 @@ class MeasurementController:
             viewer._on_calibration_pixels_selected = None
             viewer.line_tool.enable()
             viewer.btn_measure.setStyleSheet("background-color: #4caf50; color: white;")
+            self.logger.debug("Measurement tool enabled")
         else:
             viewer.line_tool.disable()
             if viewer.btn_measure is not None:
                 viewer.btn_measure.setStyleSheet("")
+            self.logger.debug("Measurement tool disabled")
 
     def on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> None:
         viewer = self.viewer
+        self.logger.debug("Line drawn: mode=%s p1=%s p2=%s", viewer._line_draw_mode, p1, p2)
         if viewer._line_draw_mode == "calibration":
             scale_x = float(viewer.ax_x.scale) if viewer.ax_x is not None else 1.0
             scale_y = float(viewer.ax_y.scale) if viewer.ax_y is not None else scale_x
@@ -107,6 +114,7 @@ class MeasurementController:
             callback = viewer._on_calibration_pixels_selected
             viewer._on_calibration_pixels_selected = None
             if callback is not None:
+                self.logger.debug("Calibration distance selected: %.6g px", dist_px)
                 callback(dist_px)
             return
 
@@ -140,6 +148,12 @@ class MeasurementController:
                 result["d_spacing"] = utils.calculate_d_spacing(dist_freq)
 
             self._add_measurement_graphics(p1, p2, result, measurement_id)
+            self.logger.debug(
+                "FFT measurement #%s stored: distance_physical=%.6g distance_pixels=%.6g",
+                measurement_id,
+                dist_freq,
+                dist_px,
+            )
             return
 
         scale_x = float(viewer.ax_x.scale) if viewer.ax_x is not None else 1.0
@@ -186,6 +200,7 @@ class MeasurementController:
                 break
 
         viewer.selected_measurement_index = selected_index
+        self.logger.debug("Measurement label selected: index=%s", selected_index)
 
         for idx, (_line_item, text_item) in enumerate(viewer.measurement_items):
             if idx == selected_index:
@@ -195,6 +210,8 @@ class MeasurementController:
 
     def clear_measurements(self) -> None:
         viewer = self.viewer
+        count = len(viewer.measurement_items)
+        self.logger.debug("Clearing all measurements from viewer: count=%s", count)
         for line_item, text_item in viewer.measurement_items:
             viewer.p1.removeItem(line_item)
             viewer.p1.removeItem(text_item)
@@ -203,24 +220,35 @@ class MeasurementController:
 
         if viewer.measurement_history_window is not None:
             viewer.measurement_history_window.clear_all(notify_parent=False)
+        self.logger.debug("Viewer measurements cleared")
 
     def clear_measurements_from_history(self) -> None:
         viewer = self.viewer
+        count = len(viewer.measurement_items)
+        self.logger.debug("Clearing viewer overlays from history window request: count=%s", count)
         for line_item, text_item in viewer.measurement_items:
             viewer.p1.removeItem(line_item)
             viewer.p1.removeItem(text_item)
         viewer.measurement_items.clear()
         viewer.selected_measurement_index = None
+        self.logger.debug("Viewer overlays cleared from history request")
 
     def delete_selected_measurement(self) -> None:
         viewer = self.viewer
         if viewer.selected_measurement_index is None:
+            self.logger.debug("Delete selected measurement ignored: nothing selected")
             return
 
         if not (0 <= viewer.selected_measurement_index < len(viewer.measurement_items)):
+            self.logger.debug(
+                "Delete selected measurement ignored: invalid index=%s count=%s",
+                viewer.selected_measurement_index,
+                len(viewer.measurement_items),
+            )
             viewer.selected_measurement_index = None
             return
 
+        deleted_index = viewer.selected_measurement_index
         line_item, text_item = viewer.measurement_items.pop(viewer.selected_measurement_index)
         viewer.p1.removeItem(line_item)
         viewer.p1.removeItem(text_item)
@@ -228,6 +256,11 @@ class MeasurementController:
         viewer.selected_measurement_index = None
         for _line_item, item in viewer.measurement_items:
             self.set_label_fill(item, LABEL_BRUSH_COLOR)
+        self.logger.debug(
+            "Deleted selected measurement: index=%s remaining=%s",
+            deleted_index,
+            len(viewer.measurement_items),
+        )
 
     @staticmethod
     def set_label_fill(text_item: pg.TextItem, brush: pg.QtGui.QBrush) -> None:
@@ -238,6 +271,7 @@ class MeasurementController:
 
     def delete_measurement_by_label(self, label_text: str) -> None:
         viewer = self.viewer
+        self.logger.debug("Delete measurement by label requested: %s", label_text)
         target_index = None
         for idx, (_line_item, text_item) in enumerate(viewer.measurement_items):
             if text_item.toPlainText() == label_text:
@@ -245,6 +279,7 @@ class MeasurementController:
                 break
 
         if target_index is None:
+            self.logger.debug("Delete measurement by label ignored: not found")
             return
 
         viewer.selected_measurement_index = target_index
@@ -290,18 +325,22 @@ class MeasurementController:
     def show_measurement_history(self) -> None:
         viewer = self.viewer
         if viewer.measurement_history_window is None:
+            self.logger.debug("Creating measurement history window")
             viewer.measurement_history_window = MeasurementHistoryWindow(viewer)
 
         viewer.measurement_history_window.show()
         viewer.measurement_history_window.raise_()
         viewer.measurement_history_window.activateWindow()
+        self.logger.debug("Measurement history window shown")
 
     def add_to_measurement_history(self, measurement_text: str) -> None:
         viewer = self.viewer
         if viewer.measurement_history_window is None:
+            self.logger.debug("Creating measurement history window for first measurement")
             viewer.measurement_history_window = MeasurementHistoryWindow(viewer)
 
         viewer.measurement_history_window.add_measurement(measurement_text)
+        self.logger.debug("Measurement added to history: %s", measurement_text)
 
     def _add_measurement_graphics(
         self,
@@ -324,4 +363,10 @@ class MeasurementController:
         viewer.p1.addItem(text_item)
 
         viewer.measurement_items.append((line, text_item))
+        self.logger.debug(
+            "Measurement graphics added: id=%s midpoint=(%.6g, %.6g)",
+            measurement_id,
+            mid_x,
+            mid_y,
+        )
         self.add_to_measurement_history(label_text)

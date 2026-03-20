@@ -5,11 +5,10 @@ Severe
 -------
 
 - inverse FFT option should work exactly the same way as for the FFT option, except that once the bounding box is selected, it should display the inverse FFT instead of the FFT. the options to draw bounding boxes for new (inverse) FFTs should be the same for FFT view windows as for parent image windows. 
-- calibration errors do not fail loudly enough. When there is a failure of calibration, the scale bar should display UNCALIBRATED on it. there also needs to be a manual calibration option, which will display a tag like (manually calibrated) on it
 
 - distance measurement is not properly context aware for whether this is a real-space or reciprocal-space image (perhaps need to use metadata to extract this)
 
-- NOT FIXED: clearing measurements from the history pane does not remove annotations on the image, as it should. also there should not be a pop up confirmation dialogue after measurements are deleted.
+- NOT FIXED: clearing measurements from the history pane does not remove annotations on the image, as it should. also there should not be a pop up confirmation dialogue after measurements are deleted. 
 
 - on the inital opening screen, all options except for parameters and open file should be greyed out.
 

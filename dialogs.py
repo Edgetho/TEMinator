@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import List
 from typing import Optional
@@ -15,6 +16,9 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 from file_navigation import IMAGE_EXTENSIONS
+
+
+logger = logging.getLogger(__name__)
 
 
 class MeasurementHistoryWindow(QtWidgets.QMainWindow):
@@ -55,9 +59,15 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         self.list_widget.addItem(measurement_text)
         self.measurements.append(measurement_text)
         self.list_widget.scrollToBottom()
+        logger.debug("MeasurementHistory add: count=%s text=%s", len(self.measurements), measurement_text)
 
-    def clear_all(self, notify_parent: bool = True):
+    def clear_all(self, _checked: bool = False, *, notify_parent: bool = True):
         """Clear all measurements."""
+        logger.debug(
+            "MeasurementHistory clear all requested: count=%s notify_parent=%s",
+            len(self.measurements),
+            notify_parent,
+        )
         self.list_widget.clear()
         self.measurements.clear()
 
@@ -65,11 +75,13 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
             parent = self.parent()
             if parent is not None and hasattr(parent, "clear_measurements_from_history"):
                 parent.clear_measurements_from_history()
+        logger.debug("MeasurementHistory cleared")
 
     def delete_selected(self):
         """Delete the currently selected measurement from history."""
         row = self.list_widget.currentRow()
         if row < 0:
+            logger.debug("MeasurementHistory delete selected ignored: no row selected")
             QtWidgets.QMessageBox.information(self, "Delete", "No measurement selected.")
             return
 
@@ -79,6 +91,7 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
 
         text = item.text()
         del item
+        logger.debug("MeasurementHistory deleting row=%s text=%s", row, text)
 
         if 0 <= row < len(self.measurements):
             self.measurements.pop(row)
@@ -86,12 +99,14 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         parent = self.parent()
         if parent is not None and hasattr(parent, "delete_measurement_by_label"):
             parent.delete_measurement_by_label(text)
+        logger.debug("MeasurementHistory delete selected complete: remaining=%s", len(self.measurements))
 
     def copy_selected(self):
         """Copy selected measurement to clipboard."""
         current = self.list_widget.currentItem()
         if current:
             QtWidgets.QApplication.clipboard().setText(current.text())
+            logger.debug("MeasurementHistory copied selected: %s", current.text())
             QtWidgets.QMessageBox.information(
                 self, "Copied", "Measurement copied to clipboard!"
             )
@@ -99,6 +114,7 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
     def export_as_csv(self):
         """Export measurements to CSV file."""
         if not self.measurements:
+            logger.debug("MeasurementHistory export requested with no measurements")
             QtWidgets.QMessageBox.warning(self, "No Data", "No measurements to export!")
             return
 
@@ -112,10 +128,12 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
                     f.write("Measurement\n")
                     for measurement in self.measurements:
                         f.write(f"{measurement}\n")
+                logger.debug("MeasurementHistory exported CSV: path=%s count=%s", file_path, len(self.measurements))
                 QtWidgets.QMessageBox.information(
                     self, "Success", f"Exported to {file_path}"
                 )
             except Exception as e:  # pragma: no cover - I/O error path
+                logger.debug("MeasurementHistory export failed: path=%s error=%s", file_path, str(e))
                 QtWidgets.QMessageBox.critical(
                     self, "Error", f"Could not export: {str(e)}"
                 )

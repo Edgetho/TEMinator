@@ -123,6 +123,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._line_draw_mode: str = "measurement"
         self._calibration_dialog_state: Optional[Dict[str, Any]] = None
         self._on_calibration_pixels_selected: Optional[Callable[[float], None]] = None
+        self._base_window_title: str = ""
         self.measurements = MeasurementController(self, logger)
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
         self.commands = ViewerCommandRouter(self, logger)
@@ -217,7 +218,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             title = f"Image Viewer - {file_name} {window_suffix}"
         else:
             title = f"Image Viewer - {file_name}"
-        self.setWindowTitle(title)
+        self._set_base_window_title(title)
 
         self.setup_ui()
         self.resize(*DEFAULT_IMAGE_WINDOW_SIZE)
@@ -242,7 +243,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         parent_title = parent.windowTitle().replace("Image Viewer - ", "")
         display_name = self.fft_name or "FFT"
-        self.setWindowTitle(f"Image Viewer - {parent_title} - {display_name}")
+        self._set_base_window_title(f"Image Viewer - {parent_title} - {display_name}")
 
         self._compute_fft()
         self._init_display_window()
@@ -515,12 +516,15 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _start_calibration_distance_pick(self) -> None:
         if self.line_tool is None:
+            logger.debug("Calibration distance pick requested but line tool is unavailable")
             QtWidgets.QMessageBox.warning(
                 self,
                 "Calibration",
                 "Line drawing tool is not available.",
             )
             return
+
+        logger.debug("Starting calibration distance pick")
 
         if self.btn_measure is not None:
             self.btn_measure.blockSignals(True)
@@ -534,6 +538,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._line_draw_mode = "calibration"
 
         def _on_pixels_selected(pixel_distance: float) -> None:
+            logger.debug("Calibration distance picked: %.6g px", pixel_distance)
             next_state = dict(state)
             next_state["reference_pixels"] = f"{pixel_distance:.12g}"
             self._calibration_dialog_state = None
@@ -541,6 +546,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self._on_calibration_pixels_selected = _on_pixels_selected
         self.line_tool.enable()
+
+    def _set_base_window_title(self, title: str) -> None:
+        self._base_window_title = title
+        self._on_measurement_drawing_state_changed(False)
+
+    def _on_measurement_drawing_state_changed(self, is_drawing: bool) -> None:
+        title = self._base_window_title or self.windowTitle()
+        if is_drawing:
+            if not title.startswith("Measurement mode - "):
+                title = f"Measurement mode - {title}"
+        elif title.startswith("Measurement mode - "):
+            title = title[len("Measurement mode - "):]
+
+        if self.windowTitle() != title:
+            self.setWindowTitle(title)
+            logger.debug("Window title updated for measurement mode: drawing=%s title=%s", is_drawing, title)
 
     def _sync_scale_bar_units_from_axes(self) -> None:
         if self.scale_bar is None or self.ax_x is None:
@@ -738,7 +759,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
             self._refresh_scale_bar_calibration_tag()
 
-        self.line_tool = LineDrawingTool(self.p1, self._on_line_drawn)
+        self.line_tool = LineDrawingTool(
+            self.p1,
+            self._on_line_drawn,
+            self._on_measurement_drawing_state_changed,
+        )
 
         self.setup_keyboard_shortcuts()
 

@@ -3,6 +3,7 @@
 # See LICENSE for full license terms.
 
 """Measurement-related tools: line drawing, FFT ROI, and labels."""
+import logging
 from typing import Tuple, Optional
 
 import pyqtgraph as pg
@@ -11,6 +12,7 @@ from pyqtgraph.Qt import QtCore
 
 # Qt signal compatibility (PyQt5 vs PySide)
 Signal = getattr(QtCore, "pyqtSignal", getattr(QtCore, "Signal", None))
+logger = logging.getLogger(__name__)
 
 # Pens and brushes used for measurement drawing
 PREVIEW_LINE_PEN = pg.mkPen('y', width=2, style=QtCore.Qt.DashLine)
@@ -21,10 +23,12 @@ LABEL_BRUSH_COLOR = pg.mkBrush(255, 255, 100, 220)  # Yellow background
 class LineDrawingTool:
     """Tool for drawing measurement lines on a plot."""
 
-    def __init__(self, plot: pg.PlotItem, on_line_drawn_callback):
+    def __init__(self, plot: pg.PlotItem, on_line_drawn_callback, on_drawing_state_changed=None):
         self.plot = plot
         self.on_line_drawn_callback = on_line_drawn_callback
+        self.on_drawing_state_changed = on_drawing_state_changed
         self.drawing = False
+        self._last_drawing_state = False
         self.start_point: Optional[Tuple[float, float]] = None
         self.line_item: Optional[pg.PlotDataItem] = None
         self.is_enabled = False
@@ -38,8 +42,9 @@ class LineDrawingTool:
     def enable(self):
         """Enable line drawing mode."""
         self.is_enabled = True
-        self.drawing = False
+        self._set_drawing_state(False)
         self.start_point = None
+        logger.debug("LineDrawingTool enabled")
 
         # Replace mouse event handlers
         self.vb.mousePressEvent = self._on_mouse_press
@@ -56,8 +61,18 @@ class LineDrawingTool:
         self.vb.mouseReleaseEvent = self.original_mouse_release
 
         self._clear_preview_line()
-        self.drawing = False
+        self._set_drawing_state(False)
         self.start_point = None
+        logger.debug("LineDrawingTool disabled")
+
+    def _set_drawing_state(self, is_drawing: bool) -> None:
+        self.drawing = is_drawing
+        if self._last_drawing_state == is_drawing:
+            return
+        self._last_drawing_state = is_drawing
+        logger.debug("LineDrawingTool drawing state changed: drawing=%s", is_drawing)
+        if self.on_drawing_state_changed is not None:
+            self.on_drawing_state_changed(is_drawing)
 
     def _clear_preview_line(self):
         """Remove preview line from plot."""
@@ -78,8 +93,9 @@ class LineDrawingTool:
 
         view_pos = self.vb.mapSceneToView(scene_pos)
         # Start a new line on mouse press
-        self.drawing = True
+        self._set_drawing_state(True)
         self.start_point = (view_pos.x(), view_pos.y())
+        logger.debug("LineDrawingTool start point: %s", self.start_point)
         self._clear_preview_line()
 
         event.accept()
@@ -126,15 +142,17 @@ class LineDrawingTool:
         if not self.plot.sceneBoundingRect().contains(scene_pos):
             # Outside plot area; cancel the drawing and delegate
             self._clear_preview_line()
-            self.drawing = False
+            self._set_drawing_state(False)
             self.start_point = None
+            logger.debug("LineDrawingTool draw cancelled: mouse release outside plot area")
             self.original_mouse_release(event)
             return
 
         # Finish the line on mouse release and trigger callback
         view_pos = self.vb.mapSceneToView(scene_pos)
         end_point = (view_pos.x(), view_pos.y())
-        self.drawing = False
+        logger.debug("LineDrawingTool end point: %s", end_point)
+        self._set_drawing_state(False)
         self._clear_preview_line()
         self.on_line_drawn_callback(self.start_point, end_point)
         self.start_point = None
