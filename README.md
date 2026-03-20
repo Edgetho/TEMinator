@@ -1,4 +1,4 @@
-TEMcompanion
+TEMinator
 =======================
 
 Desktop viewer for electron microscopy and related scientific images with fast, interactive FFT analysis, distance measurements, and metadata-aware scaling.
@@ -7,12 +7,47 @@ The application is built with PyQt / pyqtgraph and HyperSpy and is intended for 
 
 Warning: This application is under very active development and will break. If you have ideas to fix things, please submit a PR.
 
+For tracked bugs and feature requests, see `known_issues.md`.
+
 ---
 
 Getting started
 ---------------
 
-### 1. Install dependencies
+###  Run the application
+
+From the project root, run:
+
+```bash
+./teminator
+```
+
+The launcher will:
+- detect the environment name from `environment.yml`
+- use `mamba run` (or `conda run`) to execute `app.py`
+- if the environment is missing and `--build-env` is provided, prompt for `yes/no`, create the environment on confirmation, and then launch
+- forward any additional arguments to the app
+
+Examples:
+
+```bash
+./teminator --help
+./teminator --build-env
+./teminator --force-x11
+./teminator --force-software
+./teminator /path/to/image.dm4
+```
+
+On startup you will see a small main window with drag‑and‑drop instructions.
+
+If you already have a compatible Python environment active, you can also run directly:
+
+```bash
+python app.py
+python app.py --force-x11
+python app.py --force-software
+```
+### Environment Configuration
 
 From the project root, create the conda/mamba environment defined in `environment.yml`:
 
@@ -29,39 +64,6 @@ conda env create -f environment.yml
 This creates the `teminator` environment with Python 3.14, NumPy, pyqtgraph, PyQt 5.15, and HyperSpy.
 
 If you prefer to use either`pip` or `venv` instead, install the packages listed in `environment.yml` manually.
-
-### 2. Run the application
-
-From the project root, run:
-
-```bash
-./teminator
-```
-
-The launcher will:
-- detect the environment name from `environment.yml`
-- use `mamba run` (or `conda run`) to execute `app.py`
-- forward any additional arguments to the app
-
-Examples:
-
-```bash
-./teminator --help
-./teminator --force-x11
-./teminator --force-software
-./teminator /path/to/image.dm4
-```
-
-On startup you will see a small main window with drag‑and‑drop instructions.
-
-If you already have a compatible Python environment active, you can also run directly:
-
-```bash
-python app.py
-python app.py --force-x11
-python app.py --force-software
-```
-
 
 ### Linux Wayland setup (optional)
 
@@ -82,6 +84,26 @@ Notes:
 - You can force X11 for one run with `./teminator --force-x11`.
 - Use `./teminator --force-software` to disable hardware acceleration (OpenGL) and force software rendering. This is useful if you experience graphics artifacts or crashes with GPU acceleration.
 - Messages like `qt.qpa.wayland: Wayland does not support QWindow::requestActivate()` are normal on Wayland and can usually be ignored.
+- If the app exits with code 139 after opening a viewer, retry with `./teminator --force-software` and then `./teminator --force-x11` to isolate GPU/Wayland driver issues.
+
+
+### macOS app bundle name (`TEMinator` instead of `Python`)
+
+On macOS, when running `python app.py`, the menu bar app name is owned by the Python process and may show `Python`.
+
+Build and launch a native `.app` bundle instead:
+
+```bash
+pip install pyinstaller
+pyinstaller --clean --noconfirm teminator.spec
+open dist/TEMinator.app
+```
+
+This repository includes `teminator.spec`, which sets:
+- `CFBundleName = TEMinator`
+- `CFBundleDisplayName = TEMinator`
+
+so the macOS menu bar displays `TEMinator`.
 
 
 
@@ -115,6 +137,31 @@ Other behaviour:
 - A dynamic overlay scale bar is drawn for real‑space images; it automatically updates size and label with zoom.
 - Diffraction patterns are detected heuristically so measurements can be reported as d‑spacings.
 
+### Keyboard shortcuts
+
+Current default shortcuts:
+
+| Menu | Action | Shortcut |
+|------|--------|----------|
+| File | Open | `Ctrl+O` |
+| File | Save View | `Ctrl+S` |
+| File | Build Figure | `Ctrl+B` |
+| File | Parameters | `Ctrl+,` |
+| Manipulate | FFT | `F` |
+| Manipulate | Inverse FFT | `Shift+F` |
+| Measure | Distance | `D` |
+| Measure | History | `H` |
+| Measure | Intensity | `I` |
+| Measure | Profile | `P` |
+| View | Metadata | `M` |
+| View | Cycle Colormap Forward | `+` |
+| View | Cycle Colormap Backward | `-` |
+| Help | Keyboard Shortcuts | `?` |
+
+Notes:
+- Some menu actions are context-gated and stay disabled until an image is active.
+- Some actions are currently placeholders (`Build Figure`, `Intensity`).
+
 ### Working with FFT boxes
 
 - Click **Add New FFT Box** to create a new ROI.
@@ -144,6 +191,7 @@ Controls in transform windows:
 - **FFT windows** display reciprocal-space magnitude (`magma` colormap).
 - **iFFT windows** display the inverse transform result for the selected ROI as a separate real-space view.
 - **Measure Distance / Clear Measurements / Measurement History** – the same measurement tools available in the main image viewer.
+- **Render Diagnostics** (from the menu bar) logs backend/runtime rendering details (OpenGL status, Qt platform values, image dtype/shape).
 
 ### Measuring distances
 
@@ -199,6 +247,10 @@ Troubleshooting
 - **Measurements show “inf” d‑spacing** – this occurs when the measured reciprocal‑space distance is numerically zero; try measuring a larger feature.
 - **Calibration warning** – if metadata does not contain usable pixel size information, the viewer falls back to unit‑per‑pixel scaling and shows a warning dialog.
 - **Linux OpenGL warning at startup** – some systems without GLX/EGL support may print a Qt warning and then continue in software mode.
+- **Wayland activation warnings** – repeated `QWindow::requestActivate()` warnings on Wayland are expected platform messages, not fatal errors.
+- **Viewer crashes on Linux (exit 139)** – try `--force-software`; if needed, combine with `--force-x11`. If software mode is stable and hardware mode is not, this points to a graphics stack/driver issue outside TEMinator.
+
+For active limitations and planned UX/workflow changes, see `known_issues.md`.
 
 ---
 

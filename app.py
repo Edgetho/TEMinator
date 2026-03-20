@@ -90,7 +90,7 @@ def main() -> None:
         os.environ.get("QT_XCB_GL_INTEGRATION"),
     )
 
-    app = QtWidgets.QApplication([sys.argv[0], *qt_args])
+    app = QtWidgets.QApplication(["TEMinator", *qt_args])
     app.setOrganizationName("TEMinator")
     app.setApplicationName("TEMinator")
     app.setApplicationDisplayName("TEMinator")
