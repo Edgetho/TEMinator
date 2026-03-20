@@ -17,6 +17,7 @@
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -68,6 +69,11 @@ def main() -> None:
     app = QtWidgets.QApplication([sys.argv[0], *qt_args])
     app.setOrganizationName("TEMinator")
     app.setApplicationName("TEMinator")
+    app.setApplicationDisplayName("TEMinator")
+
+    if sys.platform.startswith("linux") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+        if hasattr(app, "setDesktopFileName"):
+            app.setDesktopFileName("teminator")
 
     settings = load_render_settings()
     gl_available = hardware_acceleration_available()
@@ -82,10 +88,16 @@ def main() -> None:
         )
 
     icon_path = Path(__file__).with_name("app_icon.png")
+    app_icon: QtGui.QIcon | None = None
     if icon_path.is_file():
-        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
+        loaded_icon = QtGui.QIcon(str(icon_path))
+        if not loaded_icon.isNull():
+            app_icon = loaded_icon
+            app.setWindowIcon(loaded_icon)
 
     window = MainWindow()
+    if app_icon is not None and not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
 
     if cli_args.image:

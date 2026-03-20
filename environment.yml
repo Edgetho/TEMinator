@@ -6,4 +6,5 @@ dependencies:
   - numpy>=2.0
   - pyqtgraph
   - pyqt=5.15.*
+  - qt-wayland
   - hyperspy

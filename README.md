@@ -58,6 +58,27 @@ If you already have a compatible Python environment active, you can also run dir
 python app.py
 ```
 
+
+### Linux Wayland setup (optional)
+
+If you want to run on Wayland with OpenGL acceleration, ensure the environment includes the Qt Wayland plugin:
+
+```bash
+mamba env update -n teminator -f environment.yml --prune
+```
+
+Then launch with:
+
+```bash
+QT_QPA_PLATFORM=wayland-egl QT_OPENGL=desktop mamba run -n teminator python app.py
+```
+
+Notes:
+- If Wayland is unavailable or plugin loading fails, use `QT_QPA_PLATFORM=xcb`.
+- Messages like `qt.qpa.wayland: Wayland does not support QWindow::requestActivate()` are normal on Wayland and can usually be ignored.
+
+
+
 ---
 
 Basic usage

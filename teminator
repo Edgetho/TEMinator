@@ -35,6 +35,7 @@ Notes:
   - All non-launcher arguments are forwarded to app.py.
   - On Linux, the launcher also applies Qt env guards to avoid mixed
     system/conda plugin ABI issues and prefers Wayland/OpenGL when available.
+  - For Wayland setup details, see README.md ("Linux Wayland setup (optional)").
 EOF
 }
 
