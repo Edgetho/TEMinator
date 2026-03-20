@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Callable, Any
 
 import numpy as np
 import hyperspy.api as hs
@@ -15,6 +15,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 import utils
+import unit_utils
 from dialogs import MeasurementHistoryWindow, MetadataWindow, ToneCurveDialog
 from measurement_tools import (
     LineDrawingTool,
@@ -107,6 +108,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._calibration_status: str = "metadata"
         self._manual_calibrated: bool = False
         self._image_inverse_cache: Optional[np.ndarray] = None
+        self._line_draw_mode: str = "measurement"
+        self._calibration_dialog_state: Optional[Dict[str, Any]] = None
+        self._on_calibration_pixels_selected: Optional[Callable[[float], None]] = None
 
         if self.view_mode == "fft":
             self._setup_fft_view()
@@ -295,7 +299,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return True
 
 
-    def _open_calibration_dialog(self) -> None:
+    def _open_calibration_dialog(self, initial_state: Optional[Dict[str, Any]] = None) -> None:
         if self.view_mode != "image" or self.ax_x is None or self.ax_y is None:
             QtWidgets.QMessageBox.information(
                 self,
@@ -304,19 +308,130 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             return
 
+        state = dict(initial_state or {})
+        current_scale_x = float(self.ax_x.scale)
+        current_scale_y = float(self.ax_y.scale)
+        default_ppu_x = 1.0 / current_scale_x if current_scale_x > 0 else 1.0
+        default_ppu_y = 1.0 / current_scale_y if current_scale_y > 0 else 1.0
+
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Parameters")
         layout = QtWidgets.QFormLayout(dialog)
 
-        unit_default = self.ax_x.units or "m"
+        unit_default = unit_utils.normalize_axis_unit(self.ax_x.units, default="nm")
 
-        edit_scale_x = QtWidgets.QLineEdit(f"{float(self.ax_x.scale):.12g}")
-        edit_scale_y = QtWidgets.QLineEdit(f"{float(self.ax_y.scale):.12g}")
-        edit_units = QtWidgets.QLineEdit(str(unit_default))
+        edit_ppu_x = QtWidgets.QLineEdit(f"{float(state.get('ppu_x', default_ppu_x)):.12g}")
+        edit_ppu_y = QtWidgets.QLineEdit(f"{float(state.get('ppu_y', default_ppu_y)):.12g}")
+        edit_units = QtWidgets.QLineEdit(str(state.get("units", unit_default)))
+        edit_ref_pixels = QtWidgets.QLineEdit(f"{float(state.get('reference_pixels', 0.0)):.12g}")
+        initial_ref_distance = state.get("reference_distance")
+        if initial_ref_distance is None:
+            initial_ref_distance = f"{float(state.get('reference_units', 1.0)):.12g}"
+        edit_ref_distance = QtWidgets.QLineEdit(str(initial_ref_distance))
+        chk_lock_ratio = QtWidgets.QCheckBox("Lock X/Y pixel ratio")
+        chk_lock_ratio.setChecked(bool(state.get("lock_xy", True)))
+        lbl_ref_error = QtWidgets.QLabel("")
+        lbl_ref_error.setStyleSheet("color: #d32f2f;")
+        lbl_ref_error.setVisible(False)
 
-        layout.addRow("Scale X (units/pixel):", edit_scale_x)
-        layout.addRow("Scale Y (units/pixel):", edit_scale_y)
+        def set_ref_error(message: Optional[str]) -> None:
+            text = (message or "").strip()
+            lbl_ref_error.setText(text)
+            lbl_ref_error.setVisible(bool(text))
+
+        def sync_locked_ppu() -> None:
+            if chk_lock_ratio.isChecked():
+                edit_ppu_y.setText(edit_ppu_x.text().strip())
+                edit_ppu_y.setEnabled(False)
+            else:
+                edit_ppu_y.setEnabled(True)
+
+        def update_ppu_from_reference() -> None:
+            try:
+                ref_pixels = float(edit_ref_pixels.text().strip())
+            except ValueError:
+                if edit_ref_pixels.text().strip():
+                    set_ref_error("Reference pixels must be a valid number.")
+                else:
+                    set_ref_error(None)
+                return
+
+            target_units = unit_utils.normalize_axis_unit(edit_units.text(), default="nm")
+            distance_text = edit_ref_distance.text().strip()
+            raw_distance = unit_utils.split_value_and_unit(distance_text)
+            if raw_distance is None:
+                if distance_text:
+                    set_ref_error(
+                        "Reference distance must be like '10', '10 nm', or '2 nm-1' (not '1/nm')."
+                    )
+                else:
+                    set_ref_error(None)
+                return
+
+            _value_raw, explicit_unit = raw_distance
+            if explicit_unit and unit_utils.unit_kind(explicit_unit) != unit_utils.unit_kind(target_units):
+                target_units = unit_utils.normalize_axis_unit(explicit_unit, default="nm")
+                edit_units.blockSignals(True)
+                edit_units.setText(target_units)
+                edit_units.blockSignals(False)
+
+            parsed_units = unit_utils.parse_distance_to_target_units(distance_text, target_units)
+            if parsed_units is None:
+                if distance_text:
+                    set_ref_error(
+                        "Could not parse/convert reference distance. Use reciprocal units as '<unit>-1' (e.g., 'nm-1')."
+                    )
+                else:
+                    set_ref_error(None)
+                return
+
+            ref_units, _parsed_unit = parsed_units
+
+            if ref_pixels <= 0 or ref_units <= 0:
+                set_ref_error("Reference pixel and distance values must be greater than zero.")
+                return
+
+            ppu = ref_pixels / ref_units
+            edit_ppu_x.setText(f"{ppu:.12g}")
+            if chk_lock_ratio.isChecked():
+                edit_ppu_y.setText(f"{ppu:.12g}")
+            set_ref_error(None)
+
+        chk_lock_ratio.toggled.connect(sync_locked_ppu)
+        edit_ppu_x.textChanged.connect(sync_locked_ppu)
+        edit_ref_pixels.textChanged.connect(update_ppu_from_reference)
+        edit_ref_distance.textChanged.connect(update_ppu_from_reference)
+        edit_units.textChanged.connect(update_ppu_from_reference)
+        sync_locked_ppu()
+
+        layout.addRow(chk_lock_ratio)
+        layout.addRow("Pixels per unit X:", edit_ppu_x)
+        layout.addRow("Pixels per unit Y:", edit_ppu_y)
         layout.addRow("Units:", edit_units)
+        layout.addRow("Reference distance (pixels):", edit_ref_pixels)
+        layout.addRow("Reference distance:", edit_ref_distance)
+        layout.addRow("", lbl_ref_error)
+
+        draw_button = QtWidgets.QPushButton("Draw distance on canvas")
+        layout.addRow("Reference picker:", draw_button)
+
+        draw_result_code = 2
+
+        def _collect_state() -> Dict[str, Any]:
+            return {
+                "ppu_x": edit_ppu_x.text().strip() or f"{default_ppu_x:.12g}",
+                "ppu_y": edit_ppu_y.text().strip() or f"{default_ppu_y:.12g}",
+                "units": edit_units.text().strip() or "nm",
+                "reference_pixels": edit_ref_pixels.text().strip() or "0",
+                "reference_distance": edit_ref_distance.text().strip() or "1",
+                "lock_xy": chk_lock_ratio.isChecked(),
+            }
+
+        def _request_draw() -> None:
+            self._calibration_dialog_state = _collect_state()
+            dialog.done(draw_result_code)
+
+        draw_button.clicked.connect(_request_draw)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
@@ -326,36 +441,47 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
-        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+        result = dialog.exec_()
+        if result == draw_result_code:
+            self._start_calibration_distance_pick()
+            return
+
+        if result != QtWidgets.QDialog.Accepted:
+            self._calibration_dialog_state = None
             return
 
         try:
-            new_scale_x = float(edit_scale_x.text().strip())
-            new_scale_y = float(edit_scale_y.text().strip())
-            new_units = edit_units.text().strip() or "m"
+            new_ppu_x = float(edit_ppu_x.text().strip())
+            new_ppu_y = float(edit_ppu_y.text().strip())
+            new_units = unit_utils.normalize_axis_unit(edit_units.text(), default="nm")
         except ValueError:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Parameters",
-                "Scale values must be valid numbers.",
+                "Pixels-per-unit values must be valid numbers.",
             )
             return
 
-        if new_scale_x <= 0 or new_scale_y <= 0:
+        if chk_lock_ratio.isChecked():
+            new_ppu_y = new_ppu_x
+
+        if new_ppu_x <= 0 or new_ppu_y <= 0:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Parameters",
-                "Scale values must be greater than zero.",
+                "Pixels-per-unit values must be greater than zero.",
             )
             return
 
-        self.ax_x.scale = new_scale_x
-        self.ax_y.scale = new_scale_y
+        self.ax_x.scale = 1.0 / new_ppu_x
+        self.ax_y.scale = 1.0 / new_ppu_y
         self.ax_x.units = new_units
         self.ax_y.units = new_units
         self._manual_calibrated = True
         self._calibration_status = "manual"
-        self.is_reciprocal_space = self._detect_reciprocal_space(self.signal)
+        self._calibration_dialog_state = None
+        metadata_reciprocal = self._detect_reciprocal_space(self.signal)
+        self.is_reciprocal_space = bool(metadata_reciprocal or unit_utils.is_reciprocal_unit(new_units))
 
         x_offset, y_offset, w, h = self.image_bounds
         if self.img_orig is not None:
@@ -366,12 +492,51 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.p1.setYRange(y_offset, y_offset + h, padding=0)
 
         if self.scale_bar is not None:
-            self.scale_bar.units = new_units
-            self.scale_bar.reciprocal = self.is_reciprocal_space
+            self._sync_scale_bar_units_from_axes()
             if hasattr(self.scale_bar, "_update_geometry"):
                 self.scale_bar._update_geometry()
 
         self._refresh_scale_bar_calibration_tag()
+
+    def _start_calibration_distance_pick(self) -> None:
+        if self.line_tool is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Calibration",
+                "Line drawing tool is not available.",
+            )
+            return
+
+        if self.btn_measure is not None:
+            self.btn_measure.blockSignals(True)
+            self.btn_measure.setChecked(False)
+            self.btn_measure.blockSignals(False)
+            self.btn_measure.setStyleSheet("")
+
+        self.line_tool.disable()
+
+        state = dict(self._calibration_dialog_state or {})
+        self._line_draw_mode = "calibration"
+
+        def _on_pixels_selected(pixel_distance: float) -> None:
+            next_state = dict(state)
+            next_state["reference_pixels"] = f"{pixel_distance:.12g}"
+            self._calibration_dialog_state = None
+            QtCore.QTimer.singleShot(0, lambda: self._open_calibration_dialog(next_state))
+
+        self._on_calibration_pixels_selected = _on_pixels_selected
+        self.line_tool.enable()
+
+    def _sync_scale_bar_units_from_axes(self) -> None:
+        if self.scale_bar is None or self.ax_x is None:
+            return
+
+        display_unit, reciprocal_mode = unit_utils.scale_bar_unit_and_mode(
+            self.ax_x.units,
+            reciprocal_hint=self.is_reciprocal_space,
+        )
+        self.scale_bar.units = display_unit
+        self.scale_bar.reciprocal = reciprocal_mode
 
     def _refresh_scale_bar_calibration_tag(self) -> None:
         if self.scale_bar is None or not hasattr(self.scale_bar, "set_status_tag"):
@@ -417,17 +582,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-        units_str = " ".join(units_parts).lower()
-        reciprocal_markers = [
-            "1/",
-            "/m",
-            "1/m",
-            "1/nm",
-            "/nm",
-            "^-1",
-            "-1",
-        ]
-        if any(marker in units_str for marker in reciprocal_markers):
+        if any(unit_utils.is_reciprocal_unit(part) for part in units_parts):
             return True
 
         # 3) Default: treat as real-space image. We no longer rely on
@@ -501,6 +656,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.btn_measure = QtWidgets.QPushButton("Measure Distance")
         self.btn_measure.setCheckable(True)
+        self.btn_measure.clicked.connect(self._toggle_line_measurement)
         self.btn_measure.hide()
 
         self.chk_inverse = QtWidgets.QCheckBox("Show Inverse FFT")
@@ -532,8 +688,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 )
             if hasattr(self.p1.vb, "setPadding"):
                 self.p1.vb.setPadding(0.0)
-            self.scale_bar = DynamicScaleBar(self.p1.vb, units=self.freq_axis_base_unit)
-            self.scale_bar.reciprocal = True
+            fft_unit, fft_reciprocal = unit_utils.scale_bar_unit_and_mode(
+                self.freq_axis_base_unit,
+                reciprocal_hint=True,
+            )
+            self.scale_bar = DynamicScaleBar(self.p1.vb, units=fft_unit)
+            self.scale_bar.reciprocal = fft_reciprocal
         else:
             self._apply_colormap()
             self._update_image_display()
@@ -546,12 +706,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.p1.setXRange(x_offset, x_offset + w, padding=0)
             self.p1.setYRange(y_offset, y_offset + h, padding=0)
 
-            units = self.ax_x.units if self.ax_x is not None and self.ax_x.units else "m"
-            if self.is_reciprocal_space:
-                self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
-                self.scale_bar.reciprocal = True
-            else:
-                self.scale_bar = DynamicScaleBar(self.p1.vb, units=units)
+            axis_units = self.ax_x.units if self.ax_x is not None else "nm"
+            display_unit, reciprocal_mode = unit_utils.scale_bar_unit_and_mode(
+                axis_units,
+                reciprocal_hint=self.is_reciprocal_space,
+            )
+            self.scale_bar = DynamicScaleBar(self.p1.vb, units=display_unit)
+            self.scale_bar.reciprocal = reciprocal_mode
+            if not reciprocal_mode:
                 try:
                     overlay_label = self._build_export_overlay_label()
                     if overlay_label and hasattr(self.scale_bar, "set_extra_label"):
@@ -1362,6 +1524,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._open_or_update_fft_window(fft_box, fft_id, text_item, region)
 
     def _exit_measure_mode(self):
+        if self._line_draw_mode == "calibration":
+            self._line_draw_mode = "measurement"
+            self._on_calibration_pixels_selected = None
+            state = dict(self._calibration_dialog_state or {})
+            self._calibration_dialog_state = None
+            if state:
+                QtCore.QTimer.singleShot(0, lambda: self._open_calibration_dialog(state))
+
         if self.btn_measure is not None and self.btn_measure.isChecked():
             self.btn_measure.setChecked(False)
 
@@ -1375,6 +1545,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
 
         if self.btn_measure is not None and self.btn_measure.isChecked():
+            self._line_draw_mode = "measurement"
+            self._on_calibration_pixels_selected = None
             self.line_tool.enable()
             self.btn_measure.setStyleSheet(
                 "background-color: #4caf50; color: white;"
@@ -1385,6 +1557,29 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 self.btn_measure.setStyleSheet("")
 
     def _on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]):
+        if self._line_draw_mode == "calibration":
+            scale_x = float(self.ax_x.scale) if self.ax_x is not None else 1.0
+            scale_y = float(self.ax_y.scale) if self.ax_y is not None else scale_x
+
+            dx_phys = float(p2[0] - p1[0])
+            dy_phys = float(p2[1] - p1[1])
+            if scale_x != 0 and scale_y != 0:
+                dx_px = dx_phys / scale_x
+                dy_px = dy_phys / scale_y
+                dist_px = float(np.hypot(dx_px, dy_px))
+            else:
+                dist_px = 0.0
+
+            self._line_draw_mode = "measurement"
+            if self.line_tool is not None:
+                self.line_tool.disable()
+
+            callback = self._on_calibration_pixels_selected
+            self._on_calibration_pixels_selected = None
+            if callback is not None:
+                callback(dist_px)
+            return
+
         self.measurement_count += 1
         measurement_id = self.measurement_count
 

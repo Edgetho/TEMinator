@@ -12,6 +12,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 import utils
+import unit_utils
 from dialogs import MeasurementHistoryWindow, ToneCurveDialog
 from measurement_tools import (
     LineDrawingTool,
@@ -61,7 +62,7 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
         self.fft_unit_x = f"1/{self.ax_x_units}" if self.ax_x_units else "1/px"
         self.fft_unit_y = f"1/{self.ax_y_units}" if self.ax_y_units else "1/px"
         self.is_reciprocal_space = True
-        self.freq_axis_base_unit = self.ax_x_units or "m"
+        self.freq_axis_base_unit = unit_utils.normalize_axis_unit(self.ax_x_units, default="nm")
 
         self._magnitude_spectrum = None
         self._fft_complex = None
@@ -150,8 +151,12 @@ class FFTViewerWindow(QtWidgets.QMainWindow):
         # FFT / diffraction view: show a reciprocal-space scale bar
         # using the parent image's spatial units (e.g. m, nm, Å) and
         # render them as m⁻¹, nm⁻¹, or Å⁻¹ as appropriate.
-        self.scale_bar = DynamicScaleBar(self.plot.vb, units=self.freq_axis_base_unit)
-        self.scale_bar.reciprocal = True
+        scale_unit, reciprocal_mode = unit_utils.scale_bar_unit_and_mode(
+            self.freq_axis_base_unit,
+            reciprocal_hint=True,
+        )
+        self.scale_bar = DynamicScaleBar(self.plot.vb, units=scale_unit)
+        self.scale_bar.reciprocal = reciprocal_mode
 
         self.line_tool = LineDrawingTool(self.plot, self._on_line_drawn)
 
