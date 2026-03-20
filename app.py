@@ -27,6 +27,7 @@ from pyqtgraph.Qt import QtWidgets, QtGui
 from main_window import MainWindow
 from viewer_settings import (
     load_render_settings,
+    set_effective_render_settings,
     global_render_config_options,
     hardware_acceleration_available,
 )
@@ -50,6 +51,16 @@ def _parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="Enable verbose debug logging.",
     )
+    parser.add_argument(
+        "--force-x11",
+        action="store_true",
+        help="Force Qt to use the X11/xcb platform backend (Linux only).",
+    )
+    parser.add_argument(
+        "--force-software",
+        action="store_true",
+        help="Force software rendering (disable hardware acceleration).",
+    )
     return parser.parse_known_args(argv)
 
 
@@ -66,6 +77,19 @@ def main() -> None:
     logger.debug("Verbose mode enabled")
     logger.debug("Qt passthrough args: %s", qt_args)
 
+    if cli_args.force_x11 and sys.platform.startswith("linux"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+        # Also ensure QT_OPENGL is set for consistent X11/xcb rendering
+        if "QT_OPENGL" not in os.environ:
+            os.environ["QT_OPENGL"] = "desktop"
+        logger.info("Forcing Qt platform backend to X11/xcb (--force-x11); QT_OPENGL=%s", os.environ.get("QT_OPENGL"))
+    logger.debug(
+        "Qt environment: QT_QPA_PLATFORM=%r QT_OPENGL=%r QT_XCB_GL_INTEGRATION=%r",
+        os.environ.get("QT_QPA_PLATFORM"),
+        os.environ.get("QT_OPENGL"),
+        os.environ.get("QT_XCB_GL_INTEGRATION"),
+    )
+
     app = QtWidgets.QApplication([sys.argv[0], *qt_args])
     app.setOrganizationName("TEMinator")
     app.setApplicationName("TEMinator")
@@ -76,10 +100,25 @@ def main() -> None:
             app.setDesktopFileName("teminator")
 
     settings = load_render_settings()
+    
+    # Override hardware acceleration if --force-software is specified
+    if cli_args.force_software:
+        settings["use_hardware_acceleration"] = False
+        logger.info("Force software rendering (--force-software); hardware acceleration disabled")
+    
+    # Cache the effective render settings for use by ImageViewer diagnostics
+    set_effective_render_settings(settings)
+    
     gl_available = hardware_acceleration_available()
+    logger.debug(
+        "Render settings at startup: requested_hw=%s gl_available=%s",
+        bool(settings.get("use_hardware_acceleration", True)),
+        gl_available,
+    )
     pg.setConfigOptions(
         **global_render_config_options(settings, hardware_available=gl_available)
     )
+    logger.debug("pyqtgraph config useOpenGL=%s", pg.getConfigOption("useOpenGL"))
 
     if bool(settings.get("use_hardware_acceleration", True)) and not gl_available:
         logger.warning(

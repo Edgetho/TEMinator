@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence, cast
+from typing import Any, Literal, Protocol, Sequence, cast
 
 import numpy as np
 import pyqtgraph as pg
@@ -26,18 +26,30 @@ class _FFTWindowManagerOwner(Protocol):
     fft_count: int
     fft_boxes: list[pg.RectROI]
     fft_box_meta: dict[pg.RectROI, dict[str, object]]
+    inverse_fft_count: int
+    inverse_fft_boxes: list[pg.RectROI]
+    inverse_fft_box_meta: dict[pg.RectROI, dict[str, object]]
     data: Any
     img_orig: Any
     file_path: str
     fft_windows: list[Any]
     fft_to_fft_window: dict[pg.RectROI, Any]
+    inverse_fft_windows: list[Any]
+    inverse_fft_to_window: dict[pg.RectROI, Any]
     selected_fft_box: pg.RectROI | None
+    selected_inverse_fft_box: pg.RectROI | None
     selected_measurement_index: int | None
 
     def _on_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem) -> None: ...
     def _on_fft_box_clicked(self, fft_box: pg.RectROI) -> None: ...
     def _on_fft_box_double_clicked(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem) -> None: ...
+    def _on_inverse_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem) -> None: ...
+    def _on_inverse_fft_box_clicked(self, fft_box: pg.RectROI) -> None: ...
+    def _on_inverse_fft_box_double_clicked(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem) -> None: ...
     def _delete_selected_measurement(self) -> None: ...
+
+
+TransformKind = Literal["fft", "inverse_fft"]
 
 
 class FFTWindowManager:
@@ -48,10 +60,54 @@ class FFTWindowManager:
         self.logger = logger
         self.fft_colors = fft_colors
 
+    @staticmethod
+    def _label_for_kind(kind: TransformKind) -> str:
+        return "FFT" if kind == "fft" else "iFFT"
+
+    def _storage_for_kind(
+        self,
+        kind: TransformKind,
+    ) -> tuple[str, str, str, str, str, str]:
+        if kind == "fft":
+            return (
+                "fft_count",
+                "fft_boxes",
+                "fft_box_meta",
+                "fft_windows",
+                "fft_to_fft_window",
+                "selected_fft_box",
+            )
+        return (
+            "inverse_fft_count",
+            "inverse_fft_boxes",
+            "inverse_fft_box_meta",
+            "inverse_fft_windows",
+            "inverse_fft_to_window",
+            "selected_inverse_fft_box",
+        )
+
     def add_new_fft(self, x_offset=None, y_offset=None, w=None, h=None) -> None:
+        self._add_new_transform("fft", x_offset, y_offset, w, h)
+
+    def add_new_inverse_fft(self, x_offset=None, y_offset=None, w=None, h=None) -> None:
+        self._add_new_transform("inverse_fft", x_offset, y_offset, w, h)
+
+    def _add_new_transform(self, kind: TransformKind, x_offset=None, y_offset=None, w=None, h=None) -> None:
         viewer = self.viewer
         if viewer.view_mode != "image":
+            self.logger.debug("Ignoring %s ROI add: viewer mode is %s", self._label_for_kind(kind), viewer.view_mode)
             return
+
+        count_attr, boxes_attr, meta_attr, _windows_attr, _map_attr, _selected_attr = self._storage_for_kind(kind)
+        label_prefix = self._label_for_kind(kind)
+        self.logger.debug(
+            "Adding new %s ROI: incoming_bounds=(%s,%s,%s,%s)",
+            label_prefix,
+            x_offset,
+            y_offset,
+            w,
+            h,
+        )
 
         if x_offset is None or y_offset is None or w is None or h is None:
             try:
@@ -67,9 +123,11 @@ class FFTWindowManager:
 
         if w is None or h is None or w <= 0 or h <= 0:
             QtWidgets.QMessageBox.warning(cast(QtWidgets.QWidget, viewer), "Error", "Invalid image bounds")
+            self.logger.debug("Rejected %s ROI add due to invalid bounds", label_prefix)
             return
 
-        color = self.fft_colors[viewer.fft_count % len(self.fft_colors)]
+        transform_count = cast(int, getattr(viewer, count_attr))
+        color = self.fft_colors[transform_count % len(self.fft_colors)]
         roi_x = float(x_offset) + float(w) / 4.0
         roi_y = float(y_offset) + float(h) / 4.0
         roi_w = float(w) / 2.0
@@ -79,20 +137,33 @@ class FFTWindowManager:
         fft_box.addScaleHandle([0, 0], [1, 1])
         viewer.p1.addItem(fft_box)
 
-        fft_id = viewer.fft_count
-        viewer.fft_count += 1
+        fft_id = transform_count
+        setattr(viewer, count_attr, transform_count + 1)
 
-        text_item = pg.TextItem(f"FFT {fft_id}", anchor=(0, 0), fill=pg.mkBrush(color))
+        text_item = pg.TextItem(f"{label_prefix} {fft_id}", anchor=(0, 0), fill=pg.mkBrush(color))
         text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
         viewer.p1.addItem(text_item)
 
-        fft_box.sigRegionChangeFinished.connect(lambda: viewer._on_fft_finished(fft_box, fft_id, text_item))
-        fft_box.sigBoxClicked.connect(lambda roi=fft_box: viewer._on_fft_box_clicked(roi))
-        fft_box.sigBoxDoubleClicked.connect(lambda roi=fft_box: viewer._on_fft_box_double_clicked(roi, fft_id, text_item))
-        viewer.fft_boxes.append(fft_box)
-        viewer.fft_box_meta[fft_box] = {"id": fft_id, "text_item": text_item}
+        if kind == "fft":
+            fft_box.sigRegionChangeFinished.connect(lambda: viewer._on_fft_finished(fft_box, fft_id, text_item))
+            fft_box.sigBoxClicked.connect(lambda roi=fft_box: viewer._on_fft_box_clicked(roi))
+            fft_box.sigBoxDoubleClicked.connect(
+                lambda roi=fft_box: viewer._on_fft_box_double_clicked(roi, fft_id, text_item)
+            )
+        else:
+            fft_box.sigRegionChangeFinished.connect(lambda: viewer._on_inverse_fft_finished(fft_box, fft_id, text_item))
+            fft_box.sigBoxClicked.connect(lambda roi=fft_box: viewer._on_inverse_fft_box_clicked(roi))
+            fft_box.sigBoxDoubleClicked.connect(
+                lambda roi=fft_box: viewer._on_inverse_fft_box_double_clicked(roi, fft_id, text_item)
+            )
+
+        boxes = cast(list[pg.RectROI], getattr(viewer, boxes_attr))
+        box_meta = cast(dict[pg.RectROI, dict[str, object]], getattr(viewer, meta_attr))
+        boxes.append(fft_box)
+        box_meta[fft_box] = {"id": fft_id, "text_item": text_item}
         self.logger.debug(
-            "Added FFT ROI id=%s at (%.3f, %.3f) size=(%.3f, %.3f)",
+            "Added %s ROI id=%s at (%.3f, %.3f) size=(%.3f, %.3f)",
+            label_prefix,
             fft_id,
             roi_x,
             roi_y,
@@ -100,56 +171,99 @@ class FFTWindowManager:
             roi_h,
         )
 
+    def on_inverse_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem) -> None:
+        self._on_transform_finished("inverse_fft", fft_box, fft_id, text_item)
+
     def on_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem) -> None:
+        self._on_transform_finished("fft", fft_box, fft_id, text_item)
+
+    def _on_transform_finished(
+        self,
+        kind: TransformKind,
+        fft_box: pg.RectROI,
+        fft_id: int,
+        text_item: pg.TextItem,
+    ) -> None:
         viewer = self.viewer
         region = fft_box.getArrayRegion(viewer.data, viewer.img_orig)
 
         if region is None or region.shape[0] < 2 or region.shape[1] < 2:
+            self.logger.debug(
+                "%s ROI finalize ignored: invalid region shape=%s",
+                self._label_for_kind(kind),
+                getattr(region, "shape", None),
+            )
             return
 
         text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
-        self.logger.debug("FFT ROI finalized id=%s region_shape=%s", fft_id, getattr(region, "shape", None))
+        self.logger.debug(
+            "%s ROI finalized id=%s region_shape=%s",
+            self._label_for_kind(kind),
+            fft_id,
+            getattr(region, "shape", None),
+        )
 
-        self.open_or_update_fft_window(fft_box, fft_id, text_item, region)
+        self.open_or_update_fft_window(kind, fft_box, fft_id, text_item, region)
 
     def open_or_update_fft_window(
         self,
+        kind: TransformKind,
         fft_box: pg.RectROI,
         fft_id: int,
         text_item: pg.TextItem,
         region: np.ndarray,
     ) -> None:
         viewer = self.viewer
-        if fft_box in viewer.fft_to_fft_window:
-            self.logger.debug("Updating FFT window for id=%s", fft_id)
-            fft_window = viewer.fft_to_fft_window[fft_box]
+        _count_attr, _boxes_attr, _meta_attr, windows_attr, map_attr, _selected_attr = self._storage_for_kind(kind)
+        windows = cast(list[Any], getattr(viewer, windows_attr))
+        transform_to_window = cast(dict[pg.RectROI, Any], getattr(viewer, map_attr))
+
+        if fft_box in transform_to_window:
+            self.logger.debug("Updating %s window for id=%s", self._label_for_kind(kind), fft_id)
+            fft_window = transform_to_window[fft_box]
+            fft_window._source_region = region
             fft_window._fft_region = region
-            fft_window._compute_fft()
+            fft_window._refresh_transform_data()
             fft_window._init_display_window()
             fft_window._update_image_display()
             fft_window.show()
             fft_window.raise_()
             fft_window.activateWindow()
         else:
-            self.logger.debug("Creating FFT window for id=%s", fft_id)
+            self.logger.debug("Creating %s window for id=%s", self._label_for_kind(kind), fft_id)
             from image_viewer import ImageViewerWindow
 
-            fft_name = f"FFT {fft_id}"
+            fft_name = f"{self._label_for_kind(kind)} {fft_id}"
             fft_window = ImageViewerWindow(
                 viewer.file_path,
-                view_mode="fft",
-                fft_region=region,
+                view_mode=kind,
+                source_region=region,
                 fft_name=fft_name,
-                parent_image_window=viewer,
+                parent_image_window=cast(Any, viewer),
             )
             fft_window.show()
-            viewer.fft_windows.append(fft_window)
-            viewer.fft_to_fft_window[fft_box] = fft_window
+            windows.append(fft_window)
+            transform_to_window[fft_box] = fft_window
+            self.logger.debug("Registered new %s child window: id=%s open_windows=%s", self._label_for_kind(kind), fft_id, len(windows))
 
     def on_fft_box_clicked(self, fft_box: pg.RectROI) -> None:
+        self._on_transform_box_clicked("fft", fft_box)
+
+    def on_inverse_fft_box_clicked(self, fft_box: pg.RectROI) -> None:
+        self._on_transform_box_clicked("inverse_fft", fft_box)
+
+    def _on_transform_box_clicked(self, kind: TransformKind, fft_box: pg.RectROI) -> None:
         viewer = self.viewer
-        if fft_box in viewer.fft_boxes:
-            viewer.selected_fft_box = fft_box
+        _count_attr, boxes_attr, _meta_attr, _windows_attr, _map_attr, selected_attr = self._storage_for_kind(kind)
+        boxes = cast(list[pg.RectROI], getattr(viewer, boxes_attr))
+        if fft_box in boxes:
+            setattr(viewer, selected_attr, fft_box)
+            self.logger.debug("Selected %s ROI", self._label_for_kind(kind))
+
+            if kind == "fft":
+                viewer.selected_inverse_fft_box = None
+            else:
+                viewer.selected_fft_box = None
 
     def on_fft_box_double_clicked(
         self,
@@ -157,13 +271,31 @@ class FFTWindowManager:
         fft_id: int,
         text_item: pg.TextItem,
     ) -> None:
+        self._on_transform_box_double_clicked("fft", fft_box, fft_id, text_item)
+
+    def on_inverse_fft_box_double_clicked(
+        self,
+        fft_box: pg.RectROI,
+        fft_id: int,
+        text_item: pg.TextItem,
+    ) -> None:
+        self._on_transform_box_double_clicked("inverse_fft", fft_box, fft_id, text_item)
+
+    def _on_transform_box_double_clicked(
+        self,
+        kind: TransformKind,
+        fft_box: pg.RectROI,
+        fft_id: int,
+        text_item: pg.TextItem,
+    ) -> None:
         viewer = self.viewer
         region = fft_box.getArrayRegion(viewer.data, viewer.img_orig)
         if region is None or region.shape[0] < 2 or region.shape[1] < 2:
+            self.logger.debug("%s ROI double-click ignored: invalid region shape=%s", self._label_for_kind(kind), getattr(region, "shape", None))
             return
 
         text_item.setPos(fft_box.pos()[0], fft_box.pos()[1])
-        self.open_or_update_fft_window(fft_box, fft_id, text_item, region)
+        self.open_or_update_fft_window(kind, fft_box, fft_id, text_item, region)
 
     def delete_selected_roi(self) -> bool:
         viewer = self.viewer
@@ -172,27 +304,51 @@ class FFTWindowManager:
             return True
 
         fft_box = viewer.selected_fft_box
-        if fft_box is None or fft_box not in viewer.fft_boxes:
+        if fft_box is not None:
+            return self._delete_transform_roi("fft", fft_box)
+
+        inverse_fft_box = viewer.selected_inverse_fft_box
+        if inverse_fft_box is not None:
+            return self._delete_transform_roi("inverse_fft", inverse_fft_box)
+
+        QtWidgets.QMessageBox.information(cast(QtWidgets.QWidget, viewer), "Delete", "No measurement or ROI selected.")
+        return False
+
+    def _delete_transform_roi(self, kind: TransformKind, fft_box: pg.RectROI) -> bool:
+        viewer = self.viewer
+        _count_attr, boxes_attr, meta_attr, windows_attr, map_attr, selected_attr = self._storage_for_kind(kind)
+        boxes = cast(list[pg.RectROI], getattr(viewer, boxes_attr))
+        box_meta = cast(dict[pg.RectROI, dict[str, object]], getattr(viewer, meta_attr))
+        windows = cast(list[Any], getattr(viewer, windows_attr))
+        transform_to_window = cast(dict[pg.RectROI, Any], getattr(viewer, map_attr))
+
+        if fft_box not in boxes:
             QtWidgets.QMessageBox.information(cast(QtWidgets.QWidget, viewer), "Delete", "No measurement or ROI selected.")
+            self.logger.debug("Delete %s ROI ignored: selected ROI not found", self._label_for_kind(kind))
             return False
 
-        index = viewer.fft_boxes.index(fft_box)
+        index = boxes.index(fft_box)
         viewer.p1.removeItem(fft_box)
 
-        meta = viewer.fft_box_meta.pop(fft_box, None)
+        meta = box_meta.pop(fft_box, None)
         if meta is not None:
             text_item = meta.get("text_item")
             if text_item is not None:
                 viewer.p1.removeItem(text_item)
 
-        fft_window = viewer.fft_to_fft_window.pop(fft_box, None)
+        fft_window = transform_to_window.pop(fft_box, None)
         if fft_window is not None:
             fft_window.close()
-            if fft_window in viewer.fft_windows:
-                viewer.fft_windows.remove(fft_window)
+            if fft_window in windows:
+                windows.remove(fft_window)
 
-        viewer.fft_boxes.pop(index)
-        viewer.selected_fft_box = None
+        boxes.pop(index)
+        setattr(viewer, selected_attr, None)
+        self.logger.debug("Deleted %s ROI index=%s remaining=%s", self._label_for_kind(kind), index, len(boxes))
 
-        QtWidgets.QMessageBox.information(cast(QtWidgets.QWidget, viewer), "Deleted", f"FFT Box {index} deleted.")
+        QtWidgets.QMessageBox.information(
+            cast(QtWidgets.QWidget, viewer),
+            "Deleted",
+            f"{self._label_for_kind(kind)} Box {index} deleted.",
+        )
         return True

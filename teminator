@@ -19,17 +19,22 @@ Usage: $(basename "$0") [--debug-qt] [--help] [app-args...]
 Runs TEMinator inside the conda/mamba environment defined by environment.yml.
 
 Options:
-  --debug-qt   Enable Qt plugin debug logging for this run (QT_DEBUG_PLUGINS=1).
+  --debug-qt      Enable Qt plugin debug logging for this run (QT_DEBUG_PLUGINS=1).
+  --force-x11     Force Qt platform backend to X11/xcb for this run.
+  --force-software
+                  Force software rendering (disable hardware acceleration).
   -v, --verbose
-               Enable verbose TEMinator debug logging (forwarded to app.py).
-  -h, --help   Show this help message and exit.
+                  Enable verbose TEMinator debug logging (forwarded to app.py).
+  -h, --help      Show this help message and exit.
 
 Examples:
   $(basename "$0")
   $(basename "$0") --debug-qt
+  $(basename "$0") --force-x11
+  $(basename "$0") --force-software
   $(basename "$0") --verbose
   $(basename "$0") /path/to/image.dm4
-  $(basename "$0") --debug-qt --verbose /path/to/image.dm4
+  $(basename "$0") --debug-qt --force-x11 --verbose /path/to/image.dm4
 
 Notes:
   - All non-launcher arguments are forwarded to app.py.
@@ -41,6 +46,8 @@ EOF
 
 ENABLE_QT_DEBUG=0
 ENABLE_APP_VERBOSE=0
+FORCE_X11=0
+FORCE_SOFTWARE=0
 SHOW_HELP=0
 APP_ARGS=()
 
@@ -48,6 +55,12 @@ for arg in "$@"; do
   case "$arg" in
     --debug-qt)
       ENABLE_QT_DEBUG=1
+      ;;
+    --force-x11)
+      FORCE_X11=1
+      ;;
+    --force-software)
+      FORCE_SOFTWARE=1
       ;;
     -v|--verbose)
       ENABLE_APP_VERBOSE=1
@@ -129,8 +142,12 @@ set -- "$PKG_MGR" run -n "$ENV_NAME" env \
   -u QML2_IMPORT_PATH
 
 if [[ "$(uname -s)" == "Linux" ]]; then
+  if [[ "$FORCE_X11" -eq 1 ]]; then
+    QT_PLATFORM_DEFAULT="xcb"
+    # Explicitly unset QT_QPA_PLATFORM to prevent inheritance from parent shell
+    unset QT_QPA_PLATFORM
   # Prefer Wayland first (when the session is Wayland) but keep xcb fallback.
-  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
     if qt_wayland_platform_available; then
       QT_PLATFORM_DEFAULT="wayland;xcb"
     else
@@ -151,6 +168,14 @@ if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then
 fi
 
 set -- "$@" python "$APP_FILE"
+
+if [[ "$FORCE_X11" -eq 1 ]]; then
+  set -- "$@" --force-x11
+fi
+
+if [[ "$FORCE_SOFTWARE" -eq 1 ]]; then
+  set -- "$@" --force-software
+fi
 
 if [[ "$ENABLE_APP_VERBOSE" -eq 1 ]]; then
   set -- "$@" --verbose

@@ -26,6 +26,7 @@ RESAMPLING_BALANCED = "balanced"
 RESAMPLING_HIGH = "high"
 RESAMPLING_CHOICES = {RESAMPLING_FAST, RESAMPLING_BALANCED, RESAMPLING_HIGH}
 _HW_AVAILABLE_CACHE: bool | None = None
+_EFFECTIVE_RENDER_SETTINGS: RenderSettings | None = None
 
 
 def _settings_store() -> QtCore.QSettings:
@@ -127,3 +128,27 @@ def global_render_config_options(
         "imageAxisOrder": "row-major",
         "antialias": True,
     }
+
+
+def set_effective_render_settings(settings: RenderSettings) -> None:
+    """Cache the effective render settings for the current session.
+    
+    This is called from app.py after applying CLI overrides to ensure that
+    render diagnostics and ImageViewer windows show the correct settings.
+    """
+    global _EFFECTIVE_RENDER_SETTINGS
+    _EFFECTIVE_RENDER_SETTINGS = {
+        "use_hardware_acceleration": settings.get("use_hardware_acceleration", True),
+        "image_resampling_quality": settings.get("image_resampling_quality", "high"),
+    }
+
+
+def get_effective_render_settings() -> RenderSettings:
+    """Get the effective render settings for the current session.
+    
+    Returns cached effective settings if set by app.py, otherwise loads from storage.
+    """
+    global _EFFECTIVE_RENDER_SETTINGS
+    if _EFFECTIVE_RENDER_SETTINGS is not None:
+        return _EFFECTIVE_RENDER_SETTINGS
+    return load_render_settings()

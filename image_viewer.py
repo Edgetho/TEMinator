@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Callable, Any
 
@@ -44,6 +45,7 @@ from viewer_settings import (
     RESAMPLING_BALANCED,
     RESAMPLING_HIGH,
     load_render_settings,
+    get_effective_render_settings,
     save_render_settings,
     global_render_config_options,
     hardware_acceleration_available,
@@ -65,6 +67,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         signal=None,
         window_suffix: Optional[str] = None,
         view_mode: str = "image",
+        source_region: Optional[np.ndarray] = None,
         fft_region: Optional[np.ndarray] = None,
         fft_name: Optional[str] = None,
         parent_image_window: Optional["ImageViewerWindow"] = None,
@@ -88,6 +91,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.fft_to_fft_window: Dict[pg.RectROI, "ImageViewerWindow"] = {}
         self.fft_box_meta: Dict[pg.RectROI, Dict[str, object]] = {}
         self.selected_fft_box: Optional[pg.RectROI] = None
+        self.inverse_fft_windows: List["ImageViewerWindow"] = []
+        self.inverse_fft_to_window: Dict[pg.RectROI, "ImageViewerWindow"] = {}
+        self.inverse_fft_box_meta: Dict[pg.RectROI, Dict[str, object]] = {}
+        self.inverse_fft_boxes: List[pg.RectROI] = []
+        self.inverse_fft_count = 0
+        self.selected_inverse_fft_box: Optional[pg.RectROI] = None
         self.scale_bar: Optional[DynamicScaleBar] = None
         self.measurement_history_window: Optional[MeasurementHistoryWindow] = None
         self.metadata_window: Optional[MetadataWindow] = None
@@ -123,21 +132,20 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._magnitude_spectrum = None
         self._fft_complex = None
         self._inverse_fft_cache = None
+        self._inverse_fft_image = None
         self._nyq_x = None
         self._nyq_y = None
         self._last_region_id = None
-        self._fft_region = fft_region
-        self.chk_inverse: Optional[QtWidgets.QCheckBox] = None
-        self._inverse_action: Optional[QtWidgets.QAction] = None
+        self._source_region = source_region if source_region is not None else fft_region
+        self._fft_region = self._source_region
         self.freq_axis_base_unit: str = "m"
         self._calibration_status: str = "metadata"
         self._manual_calibrated: bool = False
-        self._image_inverse_cache: Optional[np.ndarray] = None
         self._line_draw_mode: str = "measurement"
         self._calibration_dialog_state: Optional[Dict[str, Any]] = None
         self._on_calibration_pixels_selected: Optional[Callable[[float], None]] = None
         self._base_window_title: str = ""
-        self._render_settings: Dict[str, Any] = load_render_settings()
+        self._render_settings: Dict[str, Any] = get_effective_render_settings()
         self._mipmap_levels: List[np.ndarray] = []
         self._current_mipmap_level: int = -1
         self._display_image_full_res: Optional[np.ndarray] = None
@@ -145,8 +153,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
         self.commands = ViewerCommandRouter(self, logger)
 
-        if self.view_mode == "fft":
-            self._setup_fft_view()
+        if self.view_mode in {"fft", "inverse_fft"}:
+            self._setup_transform_view()
         elif signal is not None:
             self._setup_from_signal(signal, window_suffix)
         else:
@@ -243,28 +251,37 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.resize(*DEFAULT_IMAGE_WINDOW_SIZE)
 
 
-    def _setup_fft_view(self):
-        if self._fft_region is None:
-            QtWidgets.QMessageBox.critical(self, "FFT", "Could not create FFT view: missing ROI data.")
+    def _setup_transform_view(self):
+        if self._source_region is None:
+            QtWidgets.QMessageBox.critical(self, "FFT", "Could not create transform view: missing ROI data.")
             self.close()
             return
+
+        logger.debug(
+            "Setting up transform view: mode=%s source_shape=%s source_dtype=%s",
+            self.view_mode,
+            getattr(self._source_region, "shape", None),
+            getattr(self._source_region, "dtype", None),
+        )
 
         parent = self.parent_image_window
         if parent is None or parent.ax_x is None or parent.ax_y is None:
-            QtWidgets.QMessageBox.critical(self, "FFT", "Could not create FFT view: missing parent calibration.")
+            QtWidgets.QMessageBox.critical(self, "FFT", "Could not create transform view: missing parent calibration.")
             self.close()
             return
 
-        self.is_reciprocal_space = True
+        is_fft_view = self.view_mode == "fft"
+        self.is_reciprocal_space = is_fft_view
         self.ax_x = parent.ax_x
         self.ax_y = parent.ax_y
         self.freq_axis_base_unit = self.ax_x.units or "m"
 
         parent_title = parent.windowTitle().replace("Image Viewer - ", "")
-        display_name = self.fft_name or "FFT"
+        default_name = "FFT" if is_fft_view else "iFFT"
+        display_name = self.fft_name or default_name
         self._set_base_window_title(f"Image Viewer - {parent_title} - {display_name}")
 
-        self._compute_fft()
+        self._refresh_transform_data()
         self._init_display_window()
         self.setup_ui()
         self.resize(*DEFAULT_FFT_WINDOW_SIZE)
@@ -837,6 +854,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         source_data = self.data
         if self.view_mode == "fft":
             source_data = self._magnitude_spectrum
+        elif self.view_mode == "inverse_fft":
+            source_data = self._inverse_fft_image
 
         if source_data is None:
             self.display_min = 0.0
@@ -868,6 +887,13 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._setup_menu_bar()
 
         self.glw = pg.GraphicsLayoutWidget()
+        logger.debug(
+            "setup_ui: mode=%s useOpenGL=%s QT_QPA_PLATFORM=%r QT_OPENGL=%r",
+            self.view_mode,
+            pg.getConfigOption("useOpenGL"),
+            os.environ.get("QT_QPA_PLATFORM"),
+            os.environ.get("QT_OPENGL"),
+        )
         self.glw.ci.setContentsMargins(0, 0, 0, 0)
         if hasattr(self.glw.ci, "layout"):
             self.glw.ci.layout.setContentsMargins(0, 0, 0, 0)
@@ -892,10 +918,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.btn_measure.setCheckable(True)
         self.btn_measure.clicked.connect(self._toggle_line_measurement)
         self.btn_measure.hide()
-
-        self.chk_inverse = QtWidgets.QCheckBox("Show Inverse FFT")
-        self.chk_inverse.hide()
-        self.chk_inverse.stateChanged.connect(lambda _state: self._update_image_display())
 
         self.p1 = self.glw.addPlot()
         self.p1.hideAxis("bottom")
@@ -929,6 +951,24 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             self.scale_bar = DynamicScaleBar(self.p1.vb, units=fft_unit)
             self.scale_bar.reciprocal = fft_reciprocal
+        elif self.view_mode == "inverse_fft":
+            self.img_orig.setLookupTable(None)
+            self._update_image_display()
+            x_offset, y_offset, w, h = self.image_bounds
+            self.img_orig.setRect(QtCore.QRectF(x_offset, y_offset, w, h))
+
+            if hasattr(self.p1.vb, "setPadding"):
+                self.p1.vb.setPadding(0.0)
+            self.p1.setXRange(x_offset, x_offset + w, padding=0)
+            self.p1.setYRange(y_offset, y_offset + h, padding=0)
+
+            axis_units = self.ax_x.units if self.ax_x is not None else "nm"
+            display_unit, reciprocal_mode = unit_utils.scale_bar_unit_and_mode(
+                axis_units,
+                reciprocal_hint=False,
+            )
+            self.scale_bar = DynamicScaleBar(self.p1.vb, units=display_unit)
+            self.scale_bar.reciprocal = reciprocal_mode
         else:
             self._apply_colormap()
             self._update_image_display()
@@ -987,10 +1027,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self.glw.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, smooth)
 
         logger.debug(
-            "Applied render preferences: quality=%s auto_downsample=%s smooth_transform=%s",
+            "Applied render preferences: mode=%s quality=%s auto_downsample=%s smooth_transform=%s useOpenGL=%s",
+            self.view_mode,
             quality,
             auto_downsample,
             smooth,
+            pg.getConfigOption("useOpenGL"),
         )
 
     @staticmethod
@@ -1082,7 +1124,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _update_image_display(self):
         if self.data is None or self.img_orig is None:
-            if self.view_mode != "fft":
+            if self.view_mode not in {"fft", "inverse_fft"}:
                 return
 
         if self.display_min is None or self.display_max is None:
@@ -1092,12 +1134,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             if self._magnitude_spectrum is None:
                 return
 
-            if self.chk_inverse is not None and self.chk_inverse.isChecked():
-                if self._inverse_fft_cache is None:
-                    self._inverse_fft_cache = utils.compute_inverse_fft(self._fft_complex)
-                display_data = self._inverse_fft_cache
-            else:
-                display_data = self._magnitude_spectrum
+            display_data = self._magnitude_spectrum
 
             adjusted = utils.apply_intensity_transform(
                 display_data,
@@ -1115,11 +1152,23 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 )
             return
 
+        if self.view_mode == "inverse_fft":
+            if self._inverse_fft_image is None:
+                return
+
+            adjusted = utils.apply_intensity_transform(
+                self._inverse_fft_image,
+                self.display_min,
+                self.display_max,
+                self.display_gamma,
+            )
+            if adjusted is None:
+                return
+
+            self._set_display_image(adjusted)
+            return
+
         display_data = self.data
-        if self.chk_inverse is not None and self.chk_inverse.isChecked() and self.data is not None:
-            if self._image_inverse_cache is None:
-                self._image_inverse_cache = np.abs(np.fft.ifft2(np.fft.ifftshift(self.data)))
-            display_data = self._image_inverse_cache
 
         adjusted = utils.apply_intensity_transform(
             display_data,
@@ -1191,28 +1240,76 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self._apply_colormap()
 
+    def _refresh_transform_data(self):
+        logger.debug(
+            "Refreshing transform data: mode=%s source_shape=%s last_region_id=%s",
+            self.view_mode,
+            getattr(self._source_region, "shape", None),
+            self._last_region_id,
+        )
+        if self.view_mode == "fft":
+            self._compute_fft()
+        elif self.view_mode == "inverse_fft":
+            self._compute_inverse_fft_from_region()
+
     def _compute_fft(self):
-        if self._fft_region is None or self.ax_x is None or self.ax_y is None:
+        if self._source_region is None or self.ax_x is None or self.ax_y is None:
+            logger.debug("Skipping FFT compute: missing source region or axes")
             return
 
-        current_region_id = id(self._fft_region)
+        current_region_id = id(self._source_region)
         if self._last_region_id == current_region_id and self._magnitude_spectrum is not None:
+            logger.debug("Skipping FFT compute: region id unchanged (%s)", current_region_id)
             return
 
         self._last_region_id = current_region_id
 
         self._magnitude_spectrum, self._nyq_x, self._nyq_y = utils.compute_fft(
-            self._fft_region,
+            self._source_region,
             self.ax_x.scale,
             self.ax_y.scale,
         )
+        logger.debug(
+            "Computed FFT: shape=%s nyq_x=%s nyq_y=%s min=%s max=%s",
+            getattr(self._magnitude_spectrum, "shape", None),
+            self._nyq_x,
+            self._nyq_y,
+            float(np.nanmin(self._magnitude_spectrum)) if self._magnitude_spectrum is not None else None,
+            float(np.nanmax(self._magnitude_spectrum)) if self._magnitude_spectrum is not None else None,
+        )
 
-        window = np.hanning(self._fft_region.shape[0])[:, None] * np.hanning(
-            self._fft_region.shape[1]
+        window = np.hanning(self._source_region.shape[0])[:, None] * np.hanning(
+            self._source_region.shape[1]
         )[None, :]
-        windowed = self._fft_region * window
+        windowed = self._source_region * window
         self._fft_complex = np.fft.fftshift(np.fft.fft2(windowed))
         self._inverse_fft_cache = None
+
+    def _compute_inverse_fft_from_region(self):
+        if self._source_region is None or self.ax_x is None or self.ax_y is None:
+            logger.debug("Skipping inverse FFT compute: missing source region or axes")
+            return
+
+        current_region_id = id(self._source_region)
+        if self._last_region_id == current_region_id and self._inverse_fft_image is not None:
+            logger.debug("Skipping inverse FFT compute: region id unchanged (%s)", current_region_id)
+            return
+
+        self._last_region_id = current_region_id
+
+        source_region = np.asarray(self._source_region, dtype=np.float32)
+        if source_region.ndim != 2:
+            logger.debug("Skipping inverse FFT compute: source region is not 2D (ndim=%s)", source_region.ndim)
+            return
+
+        self._inverse_fft_image = np.abs(np.fft.fftshift(np.fft.ifft2(np.fft.ifftshift(source_region))))
+        logger.debug(
+            "Computed inverse FFT: input_shape=%s output_shape=%s output_min=%s output_max=%s",
+            source_region.shape,
+            getattr(self._inverse_fft_image, "shape", None),
+            float(np.nanmin(self._inverse_fft_image)) if self._inverse_fft_image is not None else None,
+            float(np.nanmax(self._inverse_fft_image)) if self._inverse_fft_image is not None else None,
+        )
 
     # Vim-style command handling -------------------------------------
 
@@ -1280,7 +1377,10 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if self.view_mode == "fft" and self._magnitude_spectrum is None:
             return
 
-        if self.view_mode != "fft" and self.data is None:
+        if self.view_mode == "inverse_fft" and self._inverse_fft_image is None:
+            return
+
+        if self.view_mode == "image" and self.data is None:
             return
 
         if self._tone_dialog is not None and self._tone_dialog.isVisible():
@@ -1299,12 +1399,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self._update_image_display()
 
         if self.view_mode == "fft":
-            if self.chk_inverse is not None and self.chk_inverse.isChecked():
-                if self._inverse_fft_cache is None and self._fft_complex is not None:
-                    self._inverse_fft_cache = utils.compute_inverse_fft(self._fft_complex)
-                source_data = self._inverse_fft_cache if self._inverse_fft_cache is not None else self._magnitude_spectrum
-            else:
-                source_data = self._magnitude_spectrum
+            source_data = self._magnitude_spectrum
+        elif self.view_mode == "inverse_fft":
+            source_data = self._inverse_fft_image
         else:
             source_data = self.data
 
@@ -1368,14 +1465,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         manipulate_menu = menu_bar.addMenu("Manipulate")
         act_fft = manipulate_menu.addAction("FFT")
-        act_fft.triggered.connect(self._add_new_fft)
+        act_fft.triggered.connect(lambda _checked=False: self._add_new_fft())
         act_fft.setEnabled(self.view_mode == "image")
 
         act_inverse_fft = manipulate_menu.addAction("Inverse FFT")
-        if self.view_mode in {"image", "fft"}:
-            act_inverse_fft.setCheckable(True)
-            act_inverse_fft.toggled.connect(self._on_inverse_fft_toggled)
-            self._inverse_action = act_inverse_fft
+        act_inverse_fft.triggered.connect(lambda _checked=False: self._add_new_inverse_fft())
+        act_inverse_fft.setEnabled(self.view_mode == "image")
 
         measure_menu = menu_bar.addMenu("Measure")
         act_distance = measure_menu.addAction("Distance")
@@ -1394,6 +1489,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         act_adjust = display_menu.addAction("Adjust")
         act_adjust.triggered.connect(self._open_adjust_dialog)
 
+        act_render_diag = display_menu.addAction("Render Diagnostics")
+        act_render_diag.triggered.connect(self._show_render_diagnostics)
+
         act_metadata = display_menu.addAction("Metadata")
         act_metadata.triggered.connect(self._show_metadata_window)
         act_metadata.setEnabled(self.view_mode == "image")
@@ -1404,6 +1502,70 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
+
+    def _show_render_diagnostics(self) -> None:
+        gl_available = hardware_acceleration_available(force_refresh=True)
+        effective = global_render_config_options(self._render_settings, hardware_available=gl_available)
+
+        diagnostics: list[str] = [
+            f"Window mode: {self.view_mode}",
+            f"File: {self.file_path}",
+            f"Requested hardware acceleration: {bool(self._render_settings.get('use_hardware_acceleration', True))}",
+            f"Detected OpenGL available: {gl_available}",
+            f"Effective pyqtgraph useOpenGL (settings): {effective.get('useOpenGL')}",
+            f"Current pyqtgraph useOpenGL (global): {pg.getConfigOption('useOpenGL')}",
+            f"Image resampling quality: {self._render_settings.get('image_resampling_quality')}",
+            f"QT_QPA_PLATFORM: {os.environ.get('QT_QPA_PLATFORM')}",
+            f"QT_OPENGL: {os.environ.get('QT_OPENGL')}",
+            f"QT_XCB_GL_INTEGRATION: {os.environ.get('QT_XCB_GL_INTEGRATION')}",
+            f"XDG_SESSION_TYPE: {os.environ.get('XDG_SESSION_TYPE')}",
+            f"WAYLAND_DISPLAY: {os.environ.get('WAYLAND_DISPLAY')}",
+            f"DISPLAY: {os.environ.get('DISPLAY')}",
+            f"Graphics widget class: {type(self.glw).__name__ if self.glw is not None else 'None'}",
+            f"Image item class: {type(self.img_orig).__name__ if self.img_orig is not None else 'None'}",
+        ]
+
+        if self._display_image_full_res is not None:
+            diagnostics.append(f"Display image shape: {self._display_image_full_res.shape}")
+            diagnostics.append(f"Display image dtype: {self._display_image_full_res.dtype}")
+
+        if self._source_region is not None:
+            diagnostics.append(f"Source region shape: {self._source_region.shape}")
+            diagnostics.append(f"Source region dtype: {self._source_region.dtype}")
+
+        if self._magnitude_spectrum is not None:
+            diagnostics.append(f"FFT magnitude shape: {self._magnitude_spectrum.shape}")
+
+        if self._inverse_fft_image is not None:
+            diagnostics.append(f"iFFT image shape: {self._inverse_fft_image.shape}")
+
+        details = "\n".join(diagnostics)
+        logger.debug("Render diagnostics requested:\n%s", details)
+
+        # Create a non-modal, resizable dialog
+        dialog = QtWidgets.QDialog(self, QtCore.Qt.Window)
+        dialog.setWindowTitle("Render Diagnostics")
+        dialog.setWindowModality(QtCore.Qt.NonModal)
+        dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        dialog.resize(600, 400)
+
+        layout = QtWidgets.QVBoxLayout()
+
+        lab_title = QtWidgets.QLabel("Render diagnostics for current window")
+        layout.addWidget(lab_title)
+
+        text_edit = QtWidgets.QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(details)
+        text_edit.setFontFamily("Courier")
+        layout.addWidget(text_edit)
+
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(dialog.close)
+        layout.addWidget(btn_close)
+
+        dialog.setLayout(layout)
+        dialog.show()
 
     def _open_parameters_dialog(self) -> None:
         current = load_render_settings()
@@ -1459,15 +1621,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _menu_start_profile_measurement(self) -> None:
         logger.debug("Menu action: start profile measurement")
         self.measurements.start_profile_measurement()
-
-    def _on_inverse_fft_toggled(self, checked: bool) -> None:
-        if self.chk_inverse is not None:
-            self.chk_inverse.blockSignals(True)
-            self.chk_inverse.setChecked(checked)
-            self.chk_inverse.blockSignals(False)
-        self.display_min = None
-        self.display_max = None
-        self._update_image_display()
 
     def _save_view_and_ffts(self) -> None:
         """Save the current view (with annotations) and any FFT windows.
@@ -1600,7 +1753,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         # Capture all open FFT windows as PNGs, with metadata + ROI label
         fft_saved = 0
-        for idx, fft_window in enumerate(self.fft_windows, start=1):
+        transform_windows = [*self.fft_windows, *self.inverse_fft_windows]
+        for idx, fft_window in enumerate(transform_windows, start=1):
             # Build label: metadata summary and ROI number (from fft_name)
             parent_window = getattr(fft_window, "parent_image_window", None)
             base_label = None
@@ -1678,10 +1832,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _on_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem):
         self.fft_manager.on_fft_finished(fft_box, fft_id, text_item)
 
-    def _open_or_update_fft_window(
-        self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem, region: np.ndarray
-    ):
-        self.fft_manager.open_or_update_fft_window(fft_box, fft_id, text_item, region)
+    def _add_new_inverse_fft(self, x_offset=None, y_offset=None, w=None, h=None):
+        self.fft_manager.add_new_inverse_fft(x_offset, y_offset, w, h)
 
     def _on_fft_box_clicked(self, fft_box: pg.RectROI):
         self.fft_manager.on_fft_box_clicked(fft_box)
@@ -1690,6 +1842,17 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem
     ):
         self.fft_manager.on_fft_box_double_clicked(fft_box, fft_id, text_item)
+
+    def _on_inverse_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem):
+        self.fft_manager.on_inverse_fft_finished(fft_box, fft_id, text_item)
+
+    def _on_inverse_fft_box_clicked(self, fft_box: pg.RectROI):
+        self.fft_manager.on_inverse_fft_box_clicked(fft_box)
+
+    def _on_inverse_fft_box_double_clicked(
+        self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem
+    ):
+        self.fft_manager.on_inverse_fft_box_double_clicked(fft_box, fft_id, text_item)
 
     def _exit_measure_mode(self):
         self.measurements.exit_measure_mode()

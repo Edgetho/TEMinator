@@ -47,6 +47,8 @@ Examples:
 
 ```bash
 ./teminator --help
+./teminator --force-x11
+./teminator --force-software
 ./teminator /path/to/image.dm4
 ```
 
@@ -56,6 +58,8 @@ If you already have a compatible Python environment active, you can also run dir
 
 ```bash
 python app.py
+python app.py --force-x11
+python app.py --force-software
 ```
 
 
@@ -75,6 +79,8 @@ QT_QPA_PLATFORM=wayland-egl QT_OPENGL=desktop mamba run -n teminator python app.
 
 Notes:
 - If Wayland is unavailable or plugin loading fails, use `QT_QPA_PLATFORM=xcb`.
+- You can force X11 for one run with `./teminator --force-x11`.
+- Use `./teminator --force-software` to disable hardware acceleration (OpenGL) and force software rendering. This is useful if you experience graphics artifacts or crashes with GPU acceleration.
 - Messages like `qt.qpa.wayland: Wayland does not support QWindow::requestActivate()` are normal on Wayland and can usually be ignored.
 
 
@@ -123,6 +129,7 @@ Interaction:
 - **Single‑click** an FFT box to select it (for deletion via **Delete Selected**).
 - **Double‑click** an FFT box to open or bring its FFT window to the front.
 - Moving a box updates its existing FFT window; a new FFT window is only created the first time the box is finalized.
+- **Inverse FFT** works the same way: choose **Manipulate → Inverse FFT**, place/adjust the ROI, and an `iFFT <id>` window opens/updates for that ROI.
 
 ### FFT windows
 
@@ -132,10 +139,11 @@ Interaction:
 - Axes are labelled in reciprocal units using the pixel scale (e.g. 1/m or 1/nm, depending on calibration).
 - A dynamic overlay scale bar, analogous to the real‑space view, shows a convenient reciprocal‑space distance in screen coordinates.
 
-Controls in an FFT window:
+Controls in transform windows:
 
-- **Show Inverse FFT** – when checked, displays the magnitude of the inverse FFT of the windowed ROI instead of the magnitude spectrum.
-- **Measure Distance / Clear Measurements / Measurement History** – the same measurement tools available in the main image viewer, but operating directly in reciprocal‑space coordinates; d‑spacings are computed from measured reciprocal distances.
+- **FFT windows** display reciprocal-space magnitude (`magma` colormap).
+- **iFFT windows** display the inverse transform result for the selected ROI as a separate real-space view.
+- **Measure Distance / Clear Measurements / Measurement History** – the same measurement tools available in the main image viewer.
 
 ### Measuring distances
 
@@ -166,7 +174,7 @@ Source layout:
 
 - `app.py` – app entrypoint and main drag-and-drop window.
 - `image_viewer.py` – `ImageViewerWindow` and image loading/opening helpers.
-- `fft_viewer.py` – `FFTViewerWindow` for ROI FFT views.
+- `viewer_fft.py` – ROI transform manager for FFT/iFFT child windows.
 - `dialogs.py` – metadata/history/tone-curve dialogs.
 - `measurement_tools.py` – line drawing tools, measurement labels, FFT ROI item classes.
 - `scale_bars.py` – dynamic and static scale bar graphics.
