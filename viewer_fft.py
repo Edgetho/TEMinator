@@ -94,7 +94,7 @@ class FFTWindowManager:
 
     def _add_new_transform(self, kind: TransformKind, x_offset=None, y_offset=None, w=None, h=None) -> None:
         viewer = self.viewer
-        if viewer.view_mode != "image":
+        if viewer.view_mode not in {"image", "fft", "inverse_fft"}:
             self.logger.debug("Ignoring %s ROI add: viewer mode is %s", self._label_for_kind(kind), viewer.view_mode)
             return
 
@@ -346,9 +346,4 @@ class FFTWindowManager:
         setattr(viewer, selected_attr, None)
         self.logger.debug("Deleted %s ROI index=%s remaining=%s", self._label_for_kind(kind), index, len(boxes))
 
-        QtWidgets.QMessageBox.information(
-            cast(QtWidgets.QWidget, viewer),
-            "Deleted",
-            f"{self._label_for_kind(kind)} Box {index} deleted.",
-        )
         return True

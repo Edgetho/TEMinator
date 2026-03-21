@@ -290,6 +290,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._set_base_window_title(f"Image Viewer - {parent_title} - {display_name}")
 
         self._refresh_transform_data()
+        if self.view_mode == "fft":
+            self.data = self._magnitude_spectrum # set the image date to the magnitude spectrum for the FFT view
+        elif self.view_mode == "inverse_fft":
+            self.data = self._inverse_fft_image # set the image data to the inverse FFT result for the iFFT view
+        else:
+            QtWidgets.QMessageBox.critical(self, "FFT", f"Unknown transform view mode: {self.view_mode}")
+            self.close()
+            return
         self._init_display_window()
         self.setup_ui()
         self.resize(*DEFAULT_FFT_WINDOW_SIZE)
@@ -1498,6 +1506,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Parameters": self._open_parameters_dialog,
             "FFT": lambda _checked=False: self._add_new_fft(),
             "Inverse FFT": lambda _checked=False: self._add_new_inverse_fft(),
+            "Adjust": self._open_adjust_dialog,
             "Distance": self._menu_start_distance_measurement,
             "History": self._show_measurement_history,
             "Intensity": lambda: self._show_not_implemented("Intensity"),
@@ -1517,9 +1526,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 item.callback = callbacks_map[item.title]
         
         # Determine if an image is available for this viewer
-        image_available = self.view_mode == "image" or (
-            hasattr(self, 'data') and self.data is not None
-        )
+        if self.view_mode == "image":
+            image_available = self.data is not None
+        elif self.view_mode == "fft":
+            image_available = self._magnitude_spectrum is not None
+        elif self.view_mode == "inverse_fft":
+            image_available = self._inverse_fft_image is not None
+        else:
+            image_available = False
         
         # Build menus using the builder
         self.menu_builder = MenuBuilder(self, logger)
@@ -1667,9 +1681,78 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _menu_start_profile_measurement(self) -> None:
         logger.debug("Menu action: start profile measurement")
         self.measurements.start_profile_measurement()
+    
+
+    def _iter_transform_windows_recursive(self):
+        """Yield all descendant FFT/iFFT windows for this image file."""
+        visited: set[int] = set()
+        stack: list["ImageViewerWindow"] = []
+        stack.extend(self.fft_windows or [])
+        stack.extend(self.inverse_fft_windows or [])
+
+        while stack:
+            win = stack.pop()
+            if win is None:
+                continue
+
+            win_id = id(win)
+            if win_id in visited:
+                continue
+            visited.add(win_id)
+
+            try:
+                mode = getattr(win, "view_mode", None)
+                same_file = getattr(win, "file_path", None) == self.file_path
+                if same_file and mode in {"fft", "inverse_fft"}:
+                    yield win
+
+                stack.extend(getattr(win, "fft_windows", []) or [])
+                stack.extend(getattr(win, "inverse_fft_windows", []) or [])
+            except RuntimeError:
+                # Qt object may already be deleted
+                continue
+
+    
+    def _child_transform_segment(self, parent: "ImageViewerWindow", child: "ImageViewerWindow") -> str:
+        """Return child segment label relative to parent, e.g. FFT0 or iFFT0."""
+        try:
+            for i, w in enumerate(parent.fft_windows or []):
+                if w is child:
+                    return f"FFT{i}"
+            for i, w in enumerate(parent.inverse_fft_windows or []):
+                if w is child:
+                    return f"iFFT{i}"
+        except RuntimeError:
+            pass
+
+        # Fallback if linkage lists are stale
+        mode = getattr(child, "view_mode", "")
+        return "iFFT0" if mode == "inverse_fft" else "FFT0"
+
+    def _transform_chain_label(self, window: "ImageViewerWindow") -> str:
+        """Build chain label from this root window to target transform window."""
+        parts: list[str] = []
+        cur = window
+        visited: set[int] = set()
+
+        while cur is not None and cur is not self:
+            cur_id = id(cur)
+            if cur_id in visited:
+                break
+            visited.add(cur_id)
+
+            parent = getattr(cur, "parent_image_window", None)
+            if parent is None:
+                break
+
+            parts.append(self._child_transform_segment(parent, cur))
+            cur = parent
+
+        parts.reverse()
+        return "-".join(parts) if parts else "oops"
 
     def _save_view_and_ffts(self) -> None:
-        """Save the current view (with annotations) and any FFT windows.
+        """Save the current view (with annotations) and any FFT windows and their children, recursively.
 
         The main image view is saved in a user-selected format (PNG, TIFF,
         or JPEG). All FFT views are saved as PNG files.
@@ -1799,7 +1882,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         # Capture all open FFT windows as PNGs, with metadata + ROI label
         fft_saved = 0
-        transform_windows = [*self.fft_windows, *self.inverse_fft_windows]
+        transform_windows = list(self._iter_transform_windows_recursive())
         for idx, fft_window in enumerate(transform_windows, start=1):
             # Build label: metadata summary and ROI number (from fft_name)
             parent_window = getattr(fft_window, "parent_image_window", None)
@@ -1846,7 +1929,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                         pass
                 continue
 
-            fft_path = directory_path / f"{base_name}_fft{idx}.png"
+            chain = self._transform_chain_label(fft_window)
+            fft_path = directory_path / f"{base_name}_{chain}.png"
             if fft_pixmap.save(str(fft_path), "PNG"):
                 fft_saved += 1
                 logger.debug("Saved FFT view: %s", fft_path)

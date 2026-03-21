@@ -282,6 +282,14 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             requires_image=True,
             menu_path="Manipulate",
         ),
+        MenuItemConfig(
+            title="Adjust",
+            shortcut="a",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            menu_path="Manipulate",
+        ),
         # Measure menu
         MenuItemConfig(
             title="Distance",
