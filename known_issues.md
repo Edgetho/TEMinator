@@ -13,6 +13,8 @@ Severe
 
 - scaling of diffraction images is currently not handled well, in terms of setting their scale bar
 
+- profile measurements in fft views do not have correct unit display
+
 ---
 Cosmetic
 -------
@@ -24,7 +26,7 @@ Cosmetic
 
 - need to implement keyboard shortcuts
 
--boundary of images at black bounding box is not clear. Perhaps change it to something clearer.
+- boundary of images at black bounding box is not clear. Perhaps change it to something clearer.
 
 
 

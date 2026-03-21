@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Callable, Optional, List, Any
+from typing import Dict, Callable, Optional, List, Any, Mapping, Literal
 
 from pyqtgraph.Qt import QtWidgets, QtGui
 
 logger = logging.getLogger(__name__)
+
+
+MenuRole = Literal["main", "viewer"]
 
 
 @dataclass
@@ -90,20 +93,6 @@ class MenuBuilder:
         self.actions[key] = action
         
         return action
-
-    def add_submenu(self, parent_menu: QtWidgets.QMenu, title: str) -> QtWidgets.QMenu:
-        """Add a submenu to a menu.
-        
-        Args:
-            parent_menu: The parent QMenu
-            title: The title of the submenu
-            
-        Returns:
-            The created QMenu
-        """
-        submenu = parent_menu.addMenu(title)
-        self.menus[f"{parent_menu.title()}::{title}"] = submenu
-        return submenu
 
     def build_from_config(
         self,
@@ -186,26 +175,6 @@ class MenuBuilder:
             self.actions[key].setEnabled(enabled)
             return True
         return False
-
-    def set_actions_enabled(
-        self,
-        menu_items: List[tuple[str, str]],
-        enabled: bool,
-    ) -> int:
-        """Enable or disable multiple menu actions.
-        
-        Args:
-            menu_items: List of (menu_name, item_title) tuples
-            enabled: Whether to enable or disable
-            
-        Returns:
-            Number of actions that were successfully updated
-        """
-        count = 0
-        for menu_name, item_title in menu_items:
-            if self.set_action_enabled(menu_name, item_title, enabled):
-                count += 1
-        return count
 
 
 def create_shared_menu_config() -> List[MenuItemConfig]:
@@ -385,39 +354,34 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
     ]
 
 
-def generate_keyboard_shortcuts_text(config: List[MenuItemConfig], extra_items: Dict[str, str] | None = None) -> str:
-    """Generate formatted keyboard shortcuts text for display dialogs.
-    
+def build_menu_config_for_role(
+    *,
+    role: MenuRole,
+    callbacks_map: Mapping[str, Callable],
+    not_implemented_factory: Optional[Callable[[str], Callable]] = None,
+) -> List[MenuItemConfig]:
+    """Create shared menu config and bind callbacks for a specific window role.
+
     Args:
-        config: List of MenuItemConfig items
-        extra_items: Optional dict of extra keyboard shortcuts not in main menu
-                     (e.g., {"Enter command mode": ":", "Exit command mode": "Esc"})
-    
+        role: Window role that determines default callback policy.
+        callbacks_map: Role-specific callback map keyed by menu item title.
+        not_implemented_factory: Optional factory for fallback callbacks used
+            by the main window when no explicit callback is provided.
+
     Returns:
-        Formatted text suitable for display in a message box
+        Fully bound list of menu item configs.
     """
-    # Group items by menu
-    menu_items: Dict[str, List[MenuItemConfig]] = {}
+    config = create_shared_menu_config()
+
     for item in config:
-        if item.menu_path not in menu_items:
-            menu_items[item.menu_path] = []
-        menu_items[item.menu_path].append(item)
-    
-    text = "TEMinator Keyboard Shortcuts\n" + "=" * 40 + "\n\n"
-    
-    for menu_name in ["File", "Manipulate", "Measure", "Display", "Help"]:
-        if menu_name in menu_items:
-            text += f"{menu_name}:\n"
-            for item in menu_items[menu_name]:
-                if item.shortcut:
-                    text += f"  {item.title:<25} {item.shortcut}\n"
-                else:
-                    text += f"  {item.title}\n"
-            text += "\n"
-    
-    if extra_items:
-        text += "Special:\n"
-        for name, shortcut in extra_items.items():
-            text += f"  {name:<25} {shortcut}\n"
-    
-    return text
+        callback = callbacks_map.get(item.title)
+        if callback is not None:
+            item.callback = callback
+            continue
+
+        if role == "main" and not_implemented_factory is not None:
+            item.callback = not_implemented_factory(item.title)
+
+    return config
+
+

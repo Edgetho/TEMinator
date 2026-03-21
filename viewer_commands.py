@@ -7,37 +7,48 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from pyqtgraph.Qt import QtWidgets
 
 from dialogs import DirectoryFuzzyOpenDialog
 from file_navigation import open_directory_fuzzy_dialog, open_image_by_name
 from image_loader import open_image_file
-
-
-class _LoggerLike(Protocol):
-    def debug(self, msg: str, *args) -> None: ...
+from types_common import LoggerLike
 
 
 class _ImageViewerCommandsOwner(Protocol):
+    """Protocol for image viewer windows managed by ViewerCommandRouter."""
     file_path: str
     btn_measure: QtWidgets.QPushButton | None
+    fft_manager: Any
+    measurements: Any
 
-    def _add_new_fft(self) -> None: ...
-    def _toggle_line_measurement(self) -> None: ...
-    def _open_adjust_dialog(self) -> None: ...
+    def _open_adjust_dialog(self) -> None:
+        """Open the tone curve adjustment dialog."""
+        ...
 
 
 class ViewerCommandRouter:
     """Owns vim-style command dispatch for a single image-viewer window."""
 
-    def __init__(self, viewer: _ImageViewerCommandsOwner, logger: _LoggerLike):
+    def __init__(self, viewer: _ImageViewerCommandsOwner, logger: LoggerLike):
+        """Initialize the command router for an image viewer window.
+        
+        Args:
+            viewer: The image viewer window that will execute commands.
+            logger: A logger instance for debug output.
+        """
         self.viewer = viewer
         self.logger = logger
 
     def open_file_by_name(self, filename: str) -> None:
-        """Open an image relative to this viewer's current file directory."""
+        """Open an image relative to this viewer's current file directory.
+
+                        Args:
+                            filename: Input value for filename.
+                    
+        """
 
         viewer = self.viewer
         try:
@@ -54,7 +65,6 @@ class ViewerCommandRouter:
 
     def open_directory_fuzzy_view(self) -> None:
         """Open fuzzy directory browser rooted at this viewer's file directory."""
-
         viewer = self.viewer
         try:
             directory = Path(viewer.file_path).parent
@@ -68,7 +78,16 @@ class ViewerCommandRouter:
         )
 
     def run_vim_command(self, cmd: str, arg: str) -> bool:
-        """Dispatch image-viewer vim-like commands."""
+        """Dispatch image-viewer vim-like commands.
+
+                        Args:
+                            cmd: Parsed command name to execute.
+                            arg: Optional command argument value.
+
+                        Returns:
+                            Detailed parameter description.
+                    
+        """
 
         viewer = self.viewer
         cmd_str = cmd.strip()
@@ -81,14 +100,11 @@ class ViewerCommandRouter:
         lower_cmd = cmd_str.lower()
 
         if upper_cmd == "F":
-            viewer._add_new_fft()
+            viewer.fft_manager.add_new_fft()
             return True
 
         if upper_cmd == "D":
-            if viewer.btn_measure is not None:
-                if not viewer.btn_measure.isChecked():
-                    viewer.btn_measure.setChecked(True)
-                    viewer._toggle_line_measurement()
+            viewer.measurements.start_distance_measurement()
             return True
 
         if upper_cmd == "A":
