@@ -17,7 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 def open_image_file(file_path: str) -> None:
-    """Open an image file; if it contains multiple images, open one window per image."""
+    """Open an image file; if it contains multiple images, open one window per image.
+
+                Args:
+                    file_path: Path to the target file on disk.
+            
+    """
 
     try:
         from image_viewer import ImageViewerWindow

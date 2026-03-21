@@ -4,7 +4,7 @@
 
 """Utility functions for FFT, measurements, image analysis, and dialogs."""
 import numpy as np
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Optional, List, Dict, Callable, Any
 import subprocess
 import os
 import logging
@@ -19,19 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Cache for window functions to avoid recomputation
 _window_cache = {}
-
-
-def get_git_commit_date() -> str:
-    """
-    Get the commit date of the current git branch.
-    
-    Deprecated: Use get_git_commit_info() instead.
-    
-    Returns:
-        A string with the commit date in format "YYYY-MM-DD" or "Version 1.0" if git info unavailable
-    """
-    commit_date, _, _ = get_git_commit_info()
-    return commit_date
 
 
 def get_git_commit_info() -> Tuple[str, str, str]:
@@ -140,13 +127,26 @@ def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
 
 
 def _plain_text_to_pre_html(content: str) -> str:
-    """Convert plain text content into escaped HTML wrapped in a styled <pre> block."""
+    """Convert plain text content into escaped HTML wrapped in a styled <pre> block.
+
+                Args:
+                    content: Input value for content.
+
+                Returns:
+                    Detailed parameter description.
+            
+    """
     escaped_content = html.escape(content)
     return f"<pre class='mono-block'>{escaped_content}</pre>"
 
 
 def _dialog_content_stylesheet() -> str:
-    """Return a shared rich-text stylesheet for app-rendered dialogs."""
+    """Return a shared rich-text stylesheet for app-rendered dialogs.
+
+                Returns:
+                    Detailed parameter description.
+            
+    """
     return """
         body {
             margin: 0;
@@ -193,7 +193,15 @@ def _dialog_content_stylesheet() -> str:
 
 
 def _wrap_html_document(body_html: str) -> str:
-    """Wrap content in a complete HTML document with shared stylesheet."""
+    """Wrap content in a complete HTML document with shared stylesheet.
+
+                Args:
+                    body_html: Input value for body html.
+
+                Returns:
+                    Detailed parameter description.
+            
+    """
     return (
         "<html><head><style>"
         f"{_dialog_content_stylesheet()}"
@@ -211,7 +219,17 @@ def _show_text_content_dialog(
     width: int = 800,
     height: int = 600,
 ) -> None:
-    """Render HTML/Markdown content in a consistent app-controlled dialog."""
+    """Render HTML/Markdown content in a consistent app-controlled dialog.
+
+                Args:
+                    parent_widget: Input value for parent widget.
+                    title: Title text displayed in the associated UI element.
+                    content: Input value for content.
+                    content_format: Input value for content format.
+                    width: Input value for width.
+                    height: Input value for height.
+            
+    """
     dialog = QtWidgets.QDialog(parent_widget)
     dialog.setWindowTitle(title)
     dialog.resize(width, height)
@@ -446,6 +464,61 @@ def show_readme_dialog(parent_widget: QtWidgets.QWidget) -> None:
         logger.error(f"Error reading README: {e}")
 
 
+class HelpDialogActions:
+    """Shared menu callbacks for keyboard shortcuts, README, and About dialogs."""
+
+    def __init__(
+        self,
+        *,
+        parent_widget: QtWidgets.QWidget,
+        menu_config_provider: Callable[[], List[Any]],
+        extra_shortcuts_provider: Optional[Callable[[], Dict[str, str]]] = None,
+        additional_colormaps_provider: Optional[Callable[[], Optional[List[str]]]] = None,
+        logger_instance: Optional[logging.Logger] = None,
+    ) -> None:
+        """Create reusable help/readme/about menu callbacks.
+
+        Args:
+            parent_widget: Parent widget used for all dialogs.
+            menu_config_provider: Supplies the menu config used by the shortcuts dialog.
+            extra_shortcuts_provider: Optional provider for additional shortcuts rows.
+            additional_colormaps_provider: Optional provider for colormap rows.
+            logger_instance: Optional logger for action diagnostics.
+        """
+        self.parent_widget = parent_widget
+        self.menu_config_provider = menu_config_provider
+        self.extra_shortcuts_provider = extra_shortcuts_provider
+        self.additional_colormaps_provider = additional_colormaps_provider
+        self.logger = logger_instance or logger
+
+    def show_keyboard_shortcuts(self) -> None:
+        """Display the keyboard shortcuts dialog with optional per-window extras."""
+        menu_config = self.menu_config_provider()
+        extra_shortcuts = None
+        if self.extra_shortcuts_provider is not None:
+            extra_shortcuts = self.extra_shortcuts_provider()
+
+        additional_colormaps = None
+        if self.additional_colormaps_provider is not None:
+            additional_colormaps = self.additional_colormaps_provider()
+
+        show_keyboard_shortcuts_dialog(
+            self.parent_widget,
+            menu_config,
+            extra_shortcuts,
+            additional_colormaps=additional_colormaps,
+        )
+
+    def show_readme(self) -> None:
+        """Display the README dialog."""
+        show_readme_dialog(self.parent_widget)
+
+    def show_about(self) -> None:
+        """Display the About dialog and emit a debug log entry."""
+        show_about_dialog(self.parent_widget)
+        self.logger.debug("Requested about dialog")
+
+
 def open_parameters_dialog(
     parent_widget: QtWidgets.QWidget,
     current_settings: Dict,
@@ -572,9 +645,17 @@ def format_si_scale(value: float, base_unit: str = '', precision: int = 3) -> Tu
 def format_reciprocal_scale(value: float, axis_unit: str = "m") -> Tuple[float, str]:
     """Format reciprocal-space values with denominator-style SI units.
 
-    Examples:
-    - values in 1/m are displayed as 1/nm when appropriate
-    - values in 1/nm can be displayed as 1/Å when appropriate
+                Examples:
+                - values in 1/m are displayed as 1/nm when appropriate
+                - values in 1/nm can be displayed as 1/Å when appropriate
+
+                Args:
+                    value: Input value for value.
+                    axis_unit: Input value for axis unit.
+
+                Returns:
+                    Detailed parameter description.
+            
     """
 
     normalized_unit = unit_utils.normalize_axis_unit(axis_unit, default="m")
@@ -622,7 +703,15 @@ def format_reciprocal_scale(value: float, axis_unit: str = "m") -> Tuple[float, 
 
 
 def _get_hanning_window(shape: Tuple[int, int]) -> np.ndarray:
-    """Get or create a cached Hanning window of specified shape."""
+    """Get or create a cached Hanning window of specified shape.
+
+                Args:
+                    shape: Input value for shape.
+
+                Returns:
+                    Detailed parameter description.
+            
+    """
     if shape not in _window_cache:
         window = np.hanning(shape[0])[:, None] * np.hanning(shape[1])[None, :]
         _window_cache[shape] = window
@@ -671,21 +760,6 @@ def compute_fft(region: np.ndarray, scale_x: float, scale_y: float, apply_window
     return magnitude_spectrum, nyq_x, nyq_y
 
 
-def compute_inverse_fft(fft_data: np.ndarray) -> np.ndarray:
-    """
-    Compute inverse FFT efficiently.
-    
-    Args:
-        fft_data: Complex FFT data (from fftshift)
-        
-    Returns:
-        Real-space image (absolute values)
-    """
-    f_unshifted = np.fft.ifftshift(fft_data)
-    real_image = np.fft.ifft2(f_unshifted)
-    return np.abs(real_image)
-
-
 def calculate_d_spacing(frequency: float, wavelength: float = 0.00251) -> float:
     """
     Calculate d-spacing from reciprocal space frequency.
@@ -700,83 +774,6 @@ def calculate_d_spacing(frequency: float, wavelength: float = 0.00251) -> float:
     if frequency == 0:
         return float('inf')
     return 1.0 / frequency
-
-
-def measure_line_distance(p1: Tuple[float, float], p2: Tuple[float, float], 
-                         scale_x: float, scale_y: Optional[float] = None, 
-                         is_reciprocal: bool = False) -> dict:
-    """
-    Measure distance between two points with optional d-spacing calculation.
-    
-    Uses vectorized NumPy for efficiency.
-    
-    Args:
-        p1: First point (x, y)
-        p2: Second point (x, y)
-        scale_x: Physical scale along x-axis (units per pixel)
-        scale_y: Physical scale along y-axis (units per pixel). If None, uses scale_x.
-        is_reciprocal: Whether this is reciprocal space
-        
-    Returns:
-        Dictionary with distance, d-spacing (if reciprocal), and scales
-    """
-    if scale_y is None:
-        scale_y = scale_x
-    
-    # Calculate distance in pixels using vectorized operations
-    diff = np.array([p2[0] - p1[0], p2[1] - p1[1]])
-    dist_pixels = np.linalg.norm(diff)
-    
-    # Calculate distance in physical units with anisotropic scaling
-    physical_scales = np.array([scale_x, scale_y])
-    physical_diff = diff * physical_scales
-    dist_physical = np.linalg.norm(physical_diff)
-    
-    result = {
-        'distance_pixels': dist_pixels,
-        'distance_physical': dist_physical,
-        'scale_x': scale_x,
-        'scale_y': scale_y
-    }
-    
-    # Calculate d-spacing for reciprocal space
-    if is_reciprocal and dist_physical != 0:
-        frequency = 1.0 / dist_physical
-        result['d_spacing'] = calculate_d_spacing(frequency)
-    
-    return result
-
-
-def is_diffraction_pattern(image_data: np.ndarray, center_ratio: float = 2.0) -> bool:
-    """
-    Detect if image is a diffraction pattern using heuristics.
-    
-    Checks for symmetric, bright center with radiating features.
-    Optimized to avoid unnecessary computations.
-    
-    Args:
-        image_data: 2D image array
-        center_ratio: Minimum ratio of center brightness to edge brightness
-        
-    Returns:
-        True if likely a diffraction pattern
-    """
-    if image_data is None or len(image_data.shape) != 2:
-        return False
-    
-    # Extract center and edge regions
-    h, w = image_data.shape
-    quarter_h, quarter_w = h // 4, w // 4
-    
-    center_region = image_data[quarter_h:3*quarter_h, quarter_w:3*quarter_w]
-    edge_region = image_data[:quarter_h, :]
-    
-    # Compute means efficiently
-    center_mean = np.mean(center_region)
-    edge_mean = np.mean(edge_region)
-    
-    # Diffraction patterns typically have bright centers
-    return center_mean > edge_mean * center_ratio
 
 
 def apply_intensity_transform(

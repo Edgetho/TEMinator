@@ -17,6 +17,12 @@ class ScaleBarItem(pg.GraphicsObject):
     """Microscopy-style scale bar for images."""
 
     def __init__(self, scale_per_pixel: float, units: str = "px"):
+        """Initialize a microscopy-style scale bar.
+        
+        Args:
+            scale_per_pixel: Physical distance per pixel in base units.
+            units: Unit label for the scale bar (default: "px").
+        """
         super().__init__()
         self.scale_per_pixel = scale_per_pixel
         self.base_units = units
@@ -61,14 +67,12 @@ class ScaleBarItem(pg.GraphicsObject):
         self.display_value = scaled_val
         self.display_unit = si_unit
 
-    def set_scale(self, scale_per_pixel: float):
-        """Update scale per pixel and recalculate bar length."""
-        self.scale_per_pixel = scale_per_pixel
-        self.update_length()
-        self.update()
-
     def boundingRect(self):  # type: ignore[override]
-        """Return bounding rect of scale bar."""
+        """Return bounding rect of scale bar graphics item.
+        
+        Returns:
+            QRectF covering the scale bar and label text area.
+        """
         if self.scale_per_pixel <= 0 or not np.isfinite(self.scale_per_pixel):
             bar_pixels = 100
         else:
@@ -77,7 +81,11 @@ class ScaleBarItem(pg.GraphicsObject):
         return QtCore.QRectF(0, 0, bar_pixels + 30, 40)
 
     def paint(self, p, *args):  # type: ignore[override]
-        """Draw the scale bar."""  # pragma: no cover - pure UI
+        """Paint the scale bar with line and label text.
+        
+        Args:
+            p: QPainter to draw with.
+        """  # pragma: no cover - pure UI
         if self.scale_per_pixel <= 0:
             return
 
@@ -126,6 +134,15 @@ class DynamicScaleBar(pg.GraphicsObject):
         max_frac: float = 0.30,
         margin: int = 20,
     ):
+        """Initialize a dynamic scale bar overlay.
+        
+        Args:
+            viewbox: The plot ViewBox to attach to.
+            units: Base unit name for the scale bar (default: "m").
+            min_frac: Minimum scale bar width as fraction of view width (default: 0.15).
+            max_frac: Maximum scale bar width as fraction of view width (default: 0.30).
+            margin: Pixel margin from view edges (default: 20).
+        """
         super().__init__()
 
         self.vb = viewbox
@@ -159,7 +176,11 @@ class DynamicScaleBar(pg.GraphicsObject):
     def set_extra_label(self, text: str | None) -> None:
         """Set an optional extra label drawn above the scale bar.
 
-        Intended primarily for export (e.g., file name and ROI number).
+                        Intended primarily for export (e.g., file name and ROI number).
+
+                        Args:
+                            text: User-facing text value for this operation.
+                    
         """
 
         # Normalize empty strings to None
@@ -168,7 +189,12 @@ class DynamicScaleBar(pg.GraphicsObject):
         self.update()
 
     def set_status_tag(self, text: str | None) -> None:
-        """Set a persistent status tag appended to the scale-bar label."""
+        """Set a persistent status tag appended to the scale-bar label.
+
+                        Args:
+                            text: User-facing text value for this operation.
+                    
+        """
 
         clean = text.strip() if isinstance(text, str) else None
         self._status_tag = clean or None
@@ -177,7 +203,17 @@ class DynamicScaleBar(pg.GraphicsObject):
     def _choose_length(
         self, target_val: float, world_per_px: float, width_px: float
     ) -> Tuple[float, float]:
-        """Return (length_val, length_px) using 2/5/10 × 10^n close to target."""
+        """Return (length_val, length_px) using 2/5/10 × 10^n close to target.
+
+                        Args:
+                            target_val: Input value for target val.
+                            world_per_px: Input value for world per px.
+                            width_px: Input value for width px.
+
+                        Returns:
+                            Detailed parameter description.
+                    
+        """
 
         if target_val <= 0 or not np.isfinite(target_val):
             return 0.0, 0.0
@@ -217,6 +253,15 @@ class DynamicScaleBar(pg.GraphicsObject):
         return float(best_val), float(best_px)
 
     def _update_geometry(self, *args):  # pragma: no cover - pure UI
+        """Update scale bar geometry for current view range and size.
+
+                        Called when the view is resized or panned. Recalculates the bar length
+                        and label based on the current physical coordinates and view dimensions.
+
+                        Args:
+                            *args: Input value for args.
+                    
+        """
         width_px = max(float(self.vb.width()), 1.0)
 
         try:
@@ -263,9 +308,19 @@ class DynamicScaleBar(pg.GraphicsObject):
         self.update()
 
     def boundingRect(self):  # type: ignore[override]
+        """Return bounding rect of the scale bar graphics item.
+
+        Returns:
+            QRectF bounding the scale bar and labels.
+        """
         return self._rect
 
     def paint(self, p, *args):  # type: ignore[override]
+        """Paint scale bar with line, caps, and labels.
+
+        Args:
+            p: QPainter used for drawing.
+        """
         if self._length_px <= 0 or not np.isfinite(self._length_px):
             return
 
