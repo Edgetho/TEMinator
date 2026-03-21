@@ -705,6 +705,21 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._refresh_view_after_calibration_change()
         logger.debug("Manual calibration applied successfully")
 
+    def _prepare_for_measurement_input(self) -> None:
+        """Clear transform-ROI selection state before entering any measurement flow."""
+        had_fft = self.selected_fft_box is not None
+        had_ifft = self.selected_inverse_fft_box is not None
+
+        self.selected_fft_box = None
+        self.selected_inverse_fft_box = None
+
+        if had_fft or had_ifft:
+            logger.debug(
+                "Cleared ROI selection before measurement input: fft_selected=%s inverse_fft_selected=%s",
+                had_fft,
+                had_ifft,
+            )
+
     def _start_calibration_distance_pick(self) -> None:
         if self.line_tool is None:
             logger.debug("Calibration distance pick requested but line tool is unavailable")
@@ -932,7 +947,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.btn_measure = QtWidgets.QPushButton("Measure Distance")
         self.btn_measure.setCheckable(True)
-        self.btn_measure.clicked.connect(self._toggle_line_measurement)
+        self.btn_measure.clicked.connect(self.measurements.toggle_line_measurement)
         self.btn_measure.hide()
 
         self.p1 = self.glw.addPlot()
@@ -1676,10 +1691,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         logger.debug("Menu action: start distance measurement")
         if self.btn_measure is not None and not self.btn_measure.isChecked():
             self.btn_measure.setChecked(True)
-        self._toggle_line_measurement()
+        self._prepare_for_measurement_input()
+        self.measurements.toggle_line_measurement()
 
     def _menu_start_profile_measurement(self) -> None:
         logger.debug("Menu action: start profile measurement")
+        self._prepare_for_measurement_input()
         self.measurements.start_profile_measurement()
     
 
@@ -1986,9 +2003,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _exit_measure_mode(self):
         self.measurements.exit_measure_mode()
-
-    def _toggle_line_measurement(self):
-        self.measurements.toggle_line_measurement()
+        
 
     def _on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]):
         self.measurements.on_line_drawn(p1, p2)

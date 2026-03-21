@@ -39,12 +39,31 @@ class LineDrawingTool:
         self.original_mouse_move = self.vb.mouseMoveEvent
         self.original_mouse_release = self.vb.mouseReleaseEvent
 
+    def _set_fft_roi_interaction_toggle(self, enabled: bool) -> None:
+        """Enable/disable mouse interaction on FFT ROI items while measuring."""
+        items = getattr(self.plot, "items", [])
+        for item in items:
+            if isinstance(item, FFTBoxROI):
+                try:
+                    item.setAcceptedMouseButtons(
+                        QtCore.Qt.LeftButton if enabled else QtCore.Qt.NoButton
+                    )
+                except Exception:
+                    pass
+                try:
+                    item.setAcceptHoverEvents(enabled)
+                except Exception:
+                    pass
+
     def enable(self):
         """Enable line drawing mode."""
         self.is_enabled = True
         self._set_drawing_state(False)
         self.start_point = None
         logger.debug("LineDrawingTool enabled")
+
+        # Disable ROI interaction so ROI items don't steal mouse events.
+        self._set_fft_roi_interaction_toggle(False)
 
         # Replace mouse event handlers
         self.vb.mousePressEvent = self._on_mouse_press
@@ -59,6 +78,9 @@ class LineDrawingTool:
         self.vb.mousePressEvent = self.original_mouse_press
         self.vb.mouseMoveEvent = self.original_mouse_move
         self.vb.mouseReleaseEvent = self.original_mouse_release
+
+        # Re-enable ROI interaction when not measuring.
+        self._set_fft_roi_interaction_toggle(True)
 
         self._clear_preview_line()
         self._set_drawing_state(False)
