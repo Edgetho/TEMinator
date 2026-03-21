@@ -10,7 +10,6 @@ Severe
 
 - distance measurement often does not work even though menu bar displays that it is in measurement mode.
 
-- measurement mode no longer works after an FFT has been enabled in the main image window, or on child FFT windows
 
 - scaling of diffraction images is currently not handled well, in terms of setting their scale bar
 

@@ -205,6 +205,32 @@ class FFTWindowManager:
 
         self.open_or_update_fft_window(kind, fft_box, fft_id, text_item, region)
 
+    
+    def _sanitize_region_for_render(self, region: np.ndarray) -> np.ndarray:
+        arr = np.asarray(region)
+        if np.iscomplexobj(arr):
+            arr = np.abs(arr)
+        arr = arr.astype(np.float32, copy=False)
+        if hasattr(self.logger, "debug"):
+            with np.errstate(invalid="ignore"):
+                finite = np.isfinite(arr)
+                if finite.any():
+                    vmin = float(arr[finite].min())
+                    vmax = float(arr[finite].max())
+                else:
+                    vmin = vmax = 0.0
+            self.logger.debug(
+                "[fft sanitize][after] dtype=%s shape=%s contiguous=%s min=%g max=%g",
+                arr.dtype,
+                arr.shape,
+                arr.flags["C_CONTIGUOUS"],
+                vmin,
+                vmax,
+            )
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        np.clip(arr, -1.0e30, 1.0e30, out=arr)
+        return np.ascontiguousarray(arr)
+    
     def open_or_update_fft_window(
         self,
         kind: TransformKind,
@@ -218,6 +244,7 @@ class FFTWindowManager:
         windows = cast(list[Any], getattr(viewer, windows_attr))
         transform_to_window = cast(dict[pg.RectROI, Any], getattr(viewer, map_attr))
 
+        region = self._sanitize_region_for_render(region)
         if fft_box in transform_to_window:
             self.logger.debug("Updating %s window for id=%s", self._label_for_kind(kind), fft_id)
             fft_window = transform_to_window[fft_box]

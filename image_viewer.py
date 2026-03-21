@@ -1122,11 +1122,52 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         return max(0, min(level, len(self._mipmap_levels) - 1))
 
+    def _sanitize_array_for_render(self, image: np.ndarray) -> np.ndarray:
+        """
+        Normalize arrays for safe Qt/pyqtgraph rendering:
+        - convert complex -> magnitude
+        - cast to float32
+        - replace NaN/Inf
+        - clamp extreme values
+        - return contiguous memory
+        """
+        arr = np.asarray(image)
+
+        if np.iscomplexobj(arr):
+            arr = np.abs(arr)
+
+        # float32 is typically safest/fastest for image upload paths
+        arr = arr.astype(np.float32, copy=False)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            with np.errstate(invalid="ignore"):
+                finite = np.isfinite(arr)
+                if finite.any():
+                    vmin = float(arr[finite].min())
+                    vmax = float(arr[finite].max())
+                else:
+                    vmin = vmax = 0.0
+            logger.debug(
+                "[render sanitize][%s][after] dtype=%s shape=%s contiguous=%s min=%g max=%g",
+                "image data",
+                arr.dtype,
+                arr.shape,
+                arr.flags["C_CONTIGUOUS"],
+                vmin,
+                vmax,
+            )
+        # Replace invalid values; avoid backend undefined behavior
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Clamp pathological magnitudes that can destabilize LUT/autoscale
+        np.clip(arr, -1.0e30, 1.0e30, out=arr)
+
+        return np.ascontiguousarray(arr)
     def _set_display_image(self, image: np.ndarray) -> None:
         if self.img_orig is None:
             return
 
-        self._display_image_full_res = np.asarray(image, dtype=np.float32)
+        self._display_image_full_res = self._sanitize_array_for_render(image)
         quality = self._render_quality_mode()
 
         if quality == RESAMPLING_HIGH:
