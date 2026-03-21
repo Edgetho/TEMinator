@@ -94,16 +94,12 @@ On macOS, when running `python app.py`, the menu bar app name is owned by the Py
 Build and launch a native `.app` bundle instead:
 
 ```bash
-pip install pyinstaller
+mamba activate teminator
+mamba install pyinstaller
 pyinstaller --clean --noconfirm teminator.spec
 open dist/TEMinator.app
 ```
-
-This repository includes `teminator.spec`, which sets:
-- `CFBundleName = TEMinator`
-- `CFBundleDisplayName = TEMinator`
-
-so the macOS menu bar displays `TEMinator`.
+If you have errors opening a speciifc filetype, make sure that the Rosettaasciio submodule(s) for it are loaded in the distribution, as they must be explicity included. So far I have only tested with FEI .emi and .ser images.
 
 
 
