@@ -12,18 +12,16 @@ from pathlib import Path
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
-from command_utils import enter_command_mode, exit_command_mode, parse_command_input
+from command_utils import CommandModeController
 from dialogs import DirectoryFuzzyOpenDialog, RenderSettingsDialog
 from file_navigation import (
     IMAGE_FILE_FILTER,
 )
 from image_loader import open_image_file
 from main_window_commands import MainWindowCommandRouter
-from menu_manager import MenuBuilder, MenuItemConfig, create_shared_menu_config
+from menu_manager import MenuBuilder, build_menu_config_for_role
 from utils import (
-    show_about_dialog,
-    show_keyboard_shortcuts_dialog,
-    show_readme_dialog,
+    HelpDialogActions,
     open_parameters_dialog,
     open_file_dialog,
 )
@@ -44,6 +42,7 @@ class MainWindow(QtWidgets.QMainWindow):
     """Main application window with drag-and-drop support."""
 
     def __init__(self):
+        """Initialize the main application window with UI and event handlers."""
         super().__init__()
         self.setWindowTitle("TEMinator!")
         self.resize(*DEFAULT_MAIN_WINDOW_SIZE)
@@ -52,6 +51,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.command_edit: QtWidgets.QLineEdit | None = None
         self._render_settings = load_render_settings()
         self.commands = MainWindowCommandRouter(self)
+        self._command_mode = CommandModeController(
+            command_edit_getter=lambda: self.command_edit,
+            run_command=self.commands.run_vim_command,
+            on_unknown_command=lambda cmd: QtWidgets.QMessageBox.information(
+                self, "Command", f"Unknown command: {cmd}"
+            ),
+            focus_target_getter=lambda: self,
+        )
+        self.help_actions = HelpDialogActions(
+            parent_widget=self,
+            menu_config_provider=lambda: build_menu_config_for_role(role="main", callbacks_map={}),
+            extra_shortcuts_provider=lambda: {
+                "Enter command mode": ":",
+                "Exit command mode": "Esc",
+            },
+            logger_instance=logger,
+        )
 
         self._setup_ui()
         self._update_render_status_indicator()
@@ -64,6 +80,7 @@ class MainWindow(QtWidgets.QMainWindow):
         colon_shortcut.activated.connect(self._enter_command_mode)
 
     def _setup_ui(self) -> None:
+        """Set up the user interface including central widget and command line."""
         self._setup_menu_bar()
 
         central = QtWidgets.QWidget()
@@ -95,35 +112,29 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.command_edit)
 
     def _setup_menu_bar(self) -> None:
-        # Get the comprehensive menu configuration
-        config = create_shared_menu_config()
-        
-        # Create callbacks mapping for this window
-        callbacks_map = {
+        """Configure the application menu bar with all actions and commands."""
+        def not_implemented(feature_name: str):
+            """Create a callback for an unimplemented feature action.
+            
+            Args:
+                feature_name: Display name of the feature.
+                
+            Returns:
+                A callable that shows the not-implemented dialog when invoked.
+            """
+            return lambda: self._show_not_implemented(feature_name)
+
+        config = build_menu_config_for_role(
+            role="main",
+            callbacks_map={
             "Open": self._open_file_dialog,
             "Parameters": self._open_parameters_dialog,
-            "Keyboard Shortcuts": self._show_keyboard_shortcuts,
-            "About": self._show_about_dialog,
-            "README": self._show_readme,
-            "Save View": lambda: self._show_not_implemented("Save View"),
-            "Build Figure": lambda: self._show_not_implemented("Build Figure"),
-            "Calibrate": lambda: self._show_not_implemented("Calibrate"),
-            "FFT": lambda: self._show_not_implemented("FFT"),
-            "Inverse FFT": lambda: self._show_not_implemented("Inverse FFT"),
-            "Distance": lambda: self._show_not_implemented("Distance"),
-            "History": lambda: self._show_not_implemented("History"),
-            "Intensity": lambda: self._show_not_implemented("Intensity"),
-            "Profile": lambda: self._show_not_implemented("Profile"),
-            "Metadata": lambda: self._show_not_implemented("Metadata"),
-            "Render Diagnostics": lambda: self._show_not_implemented("Render Diagnostics"),
-            "Cycle Colormap Forward": lambda: self._show_not_implemented("Cycle Colormap Forward"),
-            "Cycle Colormap Backward": lambda: self._show_not_implemented("Cycle Colormap Backward"),
-        }
-        
-        # Update config with actual callbacks
-        for item in config:
-            if item.title in callbacks_map:
-                item.callback = callbacks_map[item.title]
+            "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
+            "About": self.help_actions.show_about,
+            "README": self.help_actions.show_readme,
+            },
+            not_implemented_factory=not_implemented,
+        )
         
         # Build menus using the builder - no image is available in main window
         # The MenuBuilder will automatically grey out items that require_image
@@ -134,32 +145,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
     def _show_not_implemented(self, feature_name: str) -> None:
+        """Display a dialog indicating that a feature is not yet implemented.
+        
+        Args:
+            feature_name: Name of the feature that is not implemented.
+        """
         QtWidgets.QMessageBox.information(
             self,
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
 
-    def _show_keyboard_shortcuts(self) -> None:
-        """Display keyboard shortcuts help dialog."""
-        config = create_shared_menu_config()
-        extra_shortcuts = {
-            "Enter command mode": ":",
-            "Exit command mode": "Esc",
-        }
-        show_keyboard_shortcuts_dialog(self, config, extra_shortcuts)
-
-    def _show_readme(self) -> None:
-        """Display README content in a scrollable dialog."""
-        show_readme_dialog(self)
-
-    def _show_about_dialog(self) -> None:
-        """Display the About dialog with app information."""
-        show_about_dialog(self)
-        logger.debug("Requested about dialog")
-
-
     def _render_status_text(self) -> str:
+        """Generate the status bar text displaying render settings and hardware info.
+        
+        Returns:
+            Formatted string showing hardware acceleration and resampling quality.
+        """
         quality = str(self._render_settings.get("image_resampling_quality", "high")).strip().lower()
         requested_hw = bool(self._render_settings.get("use_hardware_acceleration", True))
         available_hw = hardware_acceleration_available()
@@ -174,9 +176,11 @@ class MainWindow(QtWidgets.QMainWindow):
         return f"Graphics settings loaded: backend={backend}, resampling={quality}"
 
     def _update_render_status_indicator(self) -> None:
+        """Update the status bar to show current render settings."""
         self.statusBar().showMessage(self._render_status_text())
 
     def _open_parameters_dialog(self) -> None:
+        """Open the parameters/settings dialog to configure render quality and hardware acceleration."""
         current = load_render_settings()
         updated = open_parameters_dialog(self, current)
         if updated is None:
@@ -191,69 +195,64 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_render_status_indicator()
 
     def _open_file_dialog(self) -> None:
+        """Open a file selection dialog and load the selected image file."""
         selected_file = open_file_dialog(self, str(Path.cwd()))
         if selected_file:
             self._open_image(selected_file)
 
     def dragEnterEvent(self, event):  # type: ignore[override]
+        """Accept drag events for image files dropped onto the window.
+
+                        Args:
+                            event: Qt event object carrying user interaction details.
+                    
+        """
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
     def dropEvent(self, event):  # type: ignore[override]
+        """Handle dropped files by opening them as images.
+
+                        Args:
+                            event: Qt event object carrying user interaction details.
+                    
+        """
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
             if file_path:
                 self._open_image(file_path)
 
     def _open_image(self, file_path: str) -> None:
+        """Load and display an image file.
+        
+        Args:
+            file_path: Path to the image file to open.
+        """
         open_image_file(file_path)
         if self.isVisible():
             self.close()
 
     def eventFilter(self, obj, event):  # type: ignore[override]
-        if self.isActiveWindow() and event.type() == QtCore.QEvent.KeyPress:
-            key_event = event
-            if getattr(key_event, "text", lambda: "")() == ":" and not key_event.modifiers():
-                self._enter_command_mode()
-                return True
+        """Handle keyboard shortcuts including vim-style command mode (colon key).
 
-            if (
-                self.command_edit is not None
-                and self.command_edit.isVisible()
-                and getattr(key_event, "key", lambda: None)() == QtCore.Qt.Key_Escape
-            ):
-                self._exit_command_mode()
-                return True
+                        Args:
+                            obj: Input value for obj.
+                            event: Qt event object carrying user interaction details.
+                    
+        """
+        if self._command_mode.handle_key_event(self.isActiveWindow(), event):
+            return True
 
         return super().eventFilter(obj, event)
 
     def _enter_command_mode(self) -> None:
-        enter_command_mode(self.command_edit)
+        """Enter vim-style command mode, showing the command line edit."""
+        self._command_mode.enter_mode()
 
     def _exit_command_mode(self) -> None:
-        exit_command_mode(self.command_edit, focus_target=self)
+        """Exit vim-style command mode and hide the command line edit."""
+        self._command_mode.exit_mode()
 
     def _execute_command_from_line(self) -> None:
-        if self.command_edit is None:
-            return
-
-        parsed = parse_command_input(self.command_edit.text())
-        if parsed is None:
-            self._exit_command_mode()
-            return
-
-        cmd, arg = parsed
-        handled = self._run_vim_command(cmd, arg)
-        if not handled:
-            QtWidgets.QMessageBox.information(self, "Command", f"Unknown command: {cmd}")
-
-        self._exit_command_mode()
-
-    def _run_vim_command(self, cmd: str, arg: str) -> bool:
-        return self.commands.run_vim_command(cmd, arg)
-
-    def _open_file_by_name(self, filename: str) -> None:
-        self.commands.open_file_by_name(filename)
-
-    def _open_directory_fuzzy_view(self) -> None:
-        self.commands.open_directory_fuzzy_view()
+        """Parse and execute a command from the command line, or display an error."""
+        self._command_mode.execute_from_line()

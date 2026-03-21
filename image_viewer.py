@@ -17,11 +17,10 @@ from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 import utils
 import unit_utils
-from command_utils import enter_command_mode, exit_command_mode, parse_command_input
+import calibration_logic
+from command_utils import CommandModeController
 from utils import (
-    show_about_dialog,
-    show_keyboard_shortcuts_dialog,
-    show_readme_dialog,
+    HelpDialogActions,
     open_parameters_dialog,
     open_file_dialog,
 )
@@ -57,7 +56,7 @@ from viewer_settings import (
     global_render_config_options,
     hardware_acceleration_available,
 )
-from menu_manager import MenuBuilder, MenuItemConfig, create_shared_menu_config
+from menu_manager import MenuBuilder, build_menu_config_for_role
 
 
 FFT_COLORS = ["r", "g", "b", "y", "c", "m"]
@@ -80,6 +79,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         fft_name: Optional[str] = None,
         parent_image_window: Optional["ImageViewerWindow"] = None,
     ):
+        """Initialize an image viewer window for displaying TEM images and measurements.
+        
+        Args:
+            file_path: Path to the source image file.
+            signal: HyperSpy Signal object to display. If None, loaded from file_path.
+            window_suffix: Optional suffix to append to window title (e.g., for multi-image files).
+            view_mode: Display mode - "image" for direct view or "fft" for Fourier transform.
+            source_region: Optional array specifying source region for FFT windows.
+            fft_region: Optional array specifying FFT region for inverse FFT windows.
+            fft_name: Optional name/label for FFT windows.
+            parent_image_window: Reference to parent viewer for FFT/inverse FFT relationships.
+        """
         super().__init__()
         self.setAcceptDrops(True)
         self.file_path = file_path
@@ -160,6 +171,27 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.measurements = MeasurementController(self, logger)
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
         self.commands = ViewerCommandRouter(self, logger)
+        self._command_mode = CommandModeController(
+            command_edit_getter=lambda: self.command_edit,
+            run_command=self.commands.run_vim_command,
+            on_unknown_command=lambda cmd: QtWidgets.QMessageBox.information(
+                self,
+                "Command",
+                f"Unknown command: {cmd}",
+            ),
+            focus_target_getter=lambda: self.glw if hasattr(self.glw, "setFocus") else None,
+        )
+        self.help_actions = HelpDialogActions(
+            parent_widget=self,
+            menu_config_provider=lambda: build_menu_config_for_role(role="viewer", callbacks_map={}),
+            extra_shortcuts_provider=lambda: {
+                "Enter command mode": ":",
+                "Exit command mode": "Esc",
+                "Delete selected ROI": "Delete",
+            },
+            additional_colormaps_provider=lambda: self._available_colormaps,
+            logger_instance=logger,
+        )
 
         if self.view_mode in {"fft", "inverse_fft"}:
             self._setup_transform_view()
@@ -177,10 +209,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     # Drag and drop -----------------------------------------------------
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent):  # type: ignore[override]
+        """Accept drag events for image files.
+
+                        Args:
+                            event: Qt event object carrying user interaction details.
+                    
+        """
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
     def dropEvent(self, event: QtGui.QDropEvent):  # type: ignore[override]
+        """Handle dropped local files and open valid image paths.
+
+                        Args:
+                            event: Qt event object carrying user interaction details.
+                    
+        """
         from pathlib import Path as _Path
 
         for url in event.mimeData().urls():
@@ -198,6 +242,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     # Loading and setup -------------------------------------------------
 
     def _load_and_setup(self):
+        """Load the image signal from disk and initialize viewer state."""
         try:
             logger.debug("Loading image via HyperSpy: %s", self.file_path)
             s = hs.load(self.file_path)
@@ -214,6 +259,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Error Loading File", str(e))
 
     def _setup_from_signal(self, signal, window_suffix: Optional[str] = None):
+        """Initialize viewer data, calibration, and display mode from a signal.
+
+            Args:
+                signal: HyperSpy signal containing image data, axes, and metadata.
+                window_suffix: Optional suffix appended to the window title for derived views.
+        """
         self.signal = signal
         self.data = signal.data
         self.ax_x = signal.axes_manager[0]
@@ -260,6 +311,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
 
     def _setup_transform_view(self):
+        """Initialize this window as an FFT or inverse-FFT transform view."""
         if self._source_region is None:
             QtWidgets.QMessageBox.critical(self, "FFT", "Could not create transform view: missing ROI data.")
             self.close()
@@ -303,9 +355,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.resize(*DEFAULT_FFT_WINDOW_SIZE)
 
     def _get_original_metadata_dict(self) -> Optional[dict]:
+        """Return original metadata dictionary for the current signal.
+
+            Returns:
+                Computed result produced by this operation.
+        """
         return self._get_original_metadata_dict_from_signal(self.signal)
 
     def _get_original_metadata_dict_from_signal(self, signal) -> Optional[dict]:
+        """Return original metadata dictionary from a provided signal object.
+
+            Args:
+                signal: HyperSpy signal containing image data, axes, and metadata.
+
+            Returns:
+                Computed result produced by this operation.
+        """
         if signal is None:
             return None
 
@@ -328,6 +393,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return None
 
     def _extract_ser_calibration(self, meta: dict) -> Optional[Tuple[float, float, Optional[float], Optional[float]]]:
+        """Extract calibration deltas/offsets from SER reader metadata.
+
+            Args:
+                meta: Metadata dictionary extracted from image headers or HyperSpy objects.
+
+            Returns:
+                Tuple of (dx, dy, ox, oy) calibration values, or None when metadata is incomplete.
+        """
         ser_params = None
         if "ser_header_parameters" in meta:
             ser_params = meta["ser_header_parameters"]
@@ -366,6 +439,19 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         oy: Optional[float] = None,
         source: str = "unknown",
     ) -> bool:
+        """Apply axis scale/unit/offset calibration values to both plot axes.
+
+            Args:
+                dx: Calibrated pixel spacing along the x-axis in physical units.
+                dy: Calibrated pixel spacing along the y-axis in physical units.
+                units: Physical unit label applied to both image axes.
+                ox: Optional x-axis origin offset in calibrated units.
+                oy: Optional y-axis origin offset in calibrated units.
+                source: Human-readable source label used in diagnostics and logs.
+
+            Returns:
+                True when axis scales/offsets are applied successfully; otherwise False.
+        """
         if self.ax_x is None or self.ax_y is None:
             logger.debug("Skipping axis calibration apply (%s): axes unavailable", source)
             return False
@@ -400,6 +486,15 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         meta_override: Optional[dict] = None,
         source: str = "signal metadata",
     ) -> bool:
+        """Apply SER calibration values extracted from original metadata.
+
+            Args:
+                meta_override: Optional metadata dictionary used instead of signal metadata.
+                source: Human-readable source label used in diagnostics and logs.
+
+            Returns:
+                True when usable calibration metadata is found and applied.
+        """
         meta = meta_override if meta_override is not None else self._get_original_metadata_dict()
         if not meta:
             logger.debug("No original metadata available for calibration (%s)", source)
@@ -414,6 +509,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return self._apply_axis_calibration_values(dx, dy, "m", ox=ox, oy=oy, source=source)
 
     def _reload_calibration_from_file_metadata(self) -> bool:
+        """Reload pixel calibration from the source image file metadata.
+        
+        Returns:
+            True if calibration was successfully loaded, False otherwise.
+        """
         if not self.file_path:
             logger.debug("Cannot reload metadata calibration: file_path is empty")
             return False
@@ -437,6 +537,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
 
     def _open_calibration_dialog(self, initial_state: Optional[Dict[str, Any]] = None) -> None:
+        """Open the interactive calibration dialog for setting pixel size manually.
+        
+        Args:
+            initial_state: Optional dict with initial calibration values.
+        """
         if self.view_mode != "image" or self.ax_x is None or self.ax_y is None:
             QtWidgets.QMessageBox.information(
                 self,
@@ -450,8 +555,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         state = dict(initial_state or {})
         current_scale_x = float(self.ax_x.scale)
         current_scale_y = float(self.ax_y.scale)
-        default_ppu_x = 1.0 / current_scale_x if current_scale_x > 0 else 1.0
-        default_ppu_y = 1.0 / current_scale_y if current_scale_y > 0 else 1.0
+        default_ppu_x = calibration_logic.default_pixels_per_unit(current_scale_x)
+        default_ppu_y = calibration_logic.default_pixels_per_unit(current_scale_y)
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Parameters")
@@ -488,60 +593,33 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 edit_ppu_y.setEnabled(True)
 
         def update_ppu_from_reference() -> None:
-            try:
-                ref_pixels = float(edit_ref_pixels.text().strip())
-            except ValueError:
-                if edit_ref_pixels.text().strip():
-                    set_ref_error("Reference pixels must be a valid number.")
-                else:
-                    set_ref_error(None)
-                return
+            result = calibration_logic.parse_reference_ppu(
+                reference_pixels_text=edit_ref_pixels.text(),
+                reference_distance_text=edit_ref_distance.text(),
+                target_units_text=edit_units.text(),
+            )
 
-            target_units = unit_utils.normalize_axis_unit(edit_units.text(), default="nm")
-            distance_text = edit_ref_distance.text().strip()
-            raw_distance = unit_utils.split_value_and_unit(distance_text)
-            if raw_distance is None:
-                if distance_text:
-                    set_ref_error(
-                        "Reference distance must be like '10', '10 nm', or '2 nm-1' (not '1/nm')."
-                    )
-                else:
-                    set_ref_error(None)
-                return
-
-            _value_raw, explicit_unit = raw_distance
-            if explicit_unit and unit_utils.unit_kind(explicit_unit) != unit_utils.unit_kind(target_units):
-                target_units = unit_utils.normalize_axis_unit(explicit_unit, default="nm")
+            if result.target_units != unit_utils.normalize_axis_unit(edit_units.text(), default="nm"):
                 edit_units.blockSignals(True)
-                edit_units.setText(target_units)
+                edit_units.setText(result.target_units)
                 edit_units.blockSignals(False)
 
-            parsed_units = unit_utils.parse_distance_to_target_units(distance_text, target_units)
-            if parsed_units is None:
-                if distance_text:
-                    set_ref_error(
-                        "Could not parse/convert reference distance. Use reciprocal units as '<unit>-1' (e.g., 'nm-1')."
-                    )
-                else:
-                    set_ref_error(None)
+            if result.error:
+                set_ref_error(result.error)
                 return
 
-            ref_units, _parsed_unit = parsed_units
-
-            if ref_pixels <= 0 or ref_units <= 0:
-                set_ref_error("Reference pixel and distance values must be greater than zero.")
+            if result.ppu is None:
+                set_ref_error(None)
                 return
 
-            ppu = ref_pixels / ref_units
+            ppu = result.ppu
             edit_ppu_x.setText(f"{ppu:.12g}")
             if chk_lock_ratio.isChecked():
                 edit_ppu_y.setText(f"{ppu:.12g}")
             set_ref_error(None)
             logger.debug(
-                "Calibration reference parsed: pixels=%s distance=%s units=%s computed_ppu=%s",
-                ref_pixels,
-                ref_units,
-                target_units,
+                "Calibration reference parsed: units=%s computed_ppu=%s",
+                result.target_units,
                 ppu,
             )
 
@@ -640,28 +718,23 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self._calibration_dialog_state = None
             return
 
-        try:
-            new_ppu_x = float(edit_ppu_x.text().strip())
-            new_ppu_y = float(edit_ppu_y.text().strip())
-            new_units = unit_utils.normalize_axis_unit(edit_units.text(), default="nm")
-        except ValueError:
+        parsed_manual = calibration_logic.parse_manual_calibration(
+            ppu_x_text=edit_ppu_x.text(),
+            ppu_y_text=edit_ppu_y.text(),
+            units_text=edit_units.text(),
+            lock_xy=chk_lock_ratio.isChecked(),
+        )
+        if parsed_manual.error:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Parameters",
-                "Pixels-per-unit values must be valid numbers.",
+                parsed_manual.error,
             )
             return
 
-        if chk_lock_ratio.isChecked():
-            new_ppu_y = new_ppu_x
-
-        if new_ppu_x <= 0 or new_ppu_y <= 0:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Parameters",
-                "Pixels-per-unit values must be greater than zero.",
-            )
-            return
+        new_ppu_x = float(parsed_manual.ppu_x)
+        new_ppu_y = float(parsed_manual.ppu_y)
+        new_units = str(parsed_manual.units)
 
         logger.debug(
             "Applying manual calibration from dialog: ppu_x=%s ppu_y=%s units=%s lock_xy=%s",
@@ -677,11 +750,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         current_scale_x = float(self.ax_x.scale)
         current_scale_y = float(self.ax_y.scale)
 
-        if (
-            metadata_reloaded_in_dialog
-            and abs(proposed_scale_x - current_scale_x) <= 1e-15
-            and abs(proposed_scale_y - current_scale_y) <= 1e-15
-            and new_units == current_units
+        if calibration_logic.should_preserve_metadata_status(
+            metadata_reloaded_in_dialog=metadata_reloaded_in_dialog,
+            proposed_scale_x=proposed_scale_x,
+            proposed_scale_y=proposed_scale_y,
+            current_scale_x=current_scale_x,
+            current_scale_y=current_scale_y,
+            new_units=new_units,
+            current_units=current_units,
         ):
             logger.debug(
                 "Calibration dialog accepted after metadata reload with unchanged values; preserving metadata status"
@@ -721,6 +797,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
 
     def _start_calibration_distance_pick(self) -> None:
+        """Start interactive distance picking used by manual calibration."""
         if self.line_tool is None:
             logger.debug("Calibration distance pick requested but line tool is unavailable")
             QtWidgets.QMessageBox.warning(
@@ -731,6 +808,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
 
         logger.debug("Starting calibration distance pick")
+        self._prepare_for_measurement_input()
 
         if self.btn_measure is not None:
             self.btn_measure.blockSignals(True)
@@ -756,10 +834,22 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._on_measurement_drawing_state_changed(False)
 
     def _set_base_window_title(self, title: str) -> None:
+        """Set and store the base window title used by stateful title updates.
+
+                        Args:
+                            title: Title text displayed in the associated UI element.
+                    
+        """
         self._base_window_title = title
         self._on_measurement_drawing_state_changed(False)
 
     def _on_measurement_drawing_state_changed(self, is_drawing: bool) -> None:
+        """Refresh window-title hints when measurement drawing mode changes.
+
+                        Args:
+                            is_drawing: Boolean flag indicating whether drawing.
+                    
+        """
         title = self._base_window_title or self.windowTitle()
         for prefix in ("Measurement mode - ", "<esc> to exit measurement mode - "):
             if title.startswith(prefix):
@@ -779,6 +869,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
 
     def _sync_scale_bar_units_from_axes(self) -> None:
+        """Sync scale-bar unit text/mode from current axis units."""
         if self.scale_bar is None or self.ax_x is None:
             return
 
@@ -796,6 +887,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
 
     def _refresh_view_after_calibration_change(self) -> None:
+        """Apply updated calibration to image rect, ranges, and scale bar."""
         x_offset, y_offset, w, h = self.image_bounds
         logger.debug(
             "Refreshing view after calibration change: x_offset=%s y_offset=%s w=%s h=%s",
@@ -820,6 +912,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._refresh_scale_bar_calibration_tag()
 
     def _refresh_scale_bar_calibration_tag(self) -> None:
+        """Update the scale-bar tag indicating current calibration status."""
         if self.scale_bar is None or not hasattr(self.scale_bar, "set_status_tag"):
             return
 
@@ -834,10 +927,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _detect_reciprocal_space(self, signal) -> bool:
         """Determine if the signal should be treated as reciprocal space.
 
-        The logic prefers explicit metadata and axis units so that images
-        originating from the same file (e.g. multi-image EMI/DM stacks)
-        receive consistent classification and therefore consistent
-        scale-bar behaviour.
+            Args:
+                signal: HyperSpy signal containing image data, axes, and metadata.
+
+            Returns:
+                Computed result produced by this operation.
         """
 
         # 1) Prefer explicit HyperSpy metadata when available
@@ -875,6 +969,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     @property
     def image_bounds(self) -> Tuple[float, float, float, float]:
+        """Get the pixel bounds of the displayed image.
+        
+        Returns:
+            (x_min, x_max, y_min, y_max) in image pixel coordinates.
+        """
         x_offset = self.ax_x.offset if self.ax_x else 0
         y_offset = self.ax_y.offset if self.ax_y else 0
         w = self.ax_x.size * self.ax_x.scale if self.ax_x else 1
@@ -882,6 +981,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return x_offset, y_offset, w, h
 
     def _init_display_window(self):
+        """Initialize display min/max/gamma from current source data."""
         source_data = self.data
         if self.view_mode == "fft":
             source_data = self._magnitude_spectrum
@@ -911,6 +1011,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
 
     def setup_ui(self):
+        """Set up the main UI layout with plot, controls, and toolbars."""
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         main_layout = QtWidgets.QVBoxLayout(central)
@@ -1031,7 +1132,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.line_tool = LineDrawingTool(
             self.p1,
-            self._on_line_drawn,
+            self.measurements.on_line_drawn,
             self._on_measurement_drawing_state_changed,
         )
 
@@ -1041,9 +1142,15 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.setup_keyboard_shortcuts()
 
     def _render_quality_mode(self) -> str:
+        """Return configured image-resampling quality mode.
+
+            Returns:
+                Normalized render quality mode key used by the viewer pipeline.
+        """
         return str(self._render_settings.get("image_resampling_quality", RESAMPLING_HIGH)).strip().lower()
 
     def _apply_render_preferences_to_view(self) -> None:
+        """Apply rendering preference flags to the image view backend."""
         if self.img_orig is None or self.glw is None:
             return
 
@@ -1068,6 +1175,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _downsample_by_2_mean(image: np.ndarray) -> Optional[np.ndarray]:
+        """Downsample a 2D image by 2x2 mean pooling.
+
+            Args:
+                image: 2D image array used for display, FFT, or tone processing.
+
+            Returns:
+                Half-resolution image created by 2x2 mean pooling, or None for unsupported inputs.
+        """
         if image.ndim != 2:
             return None
 
@@ -1082,6 +1197,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return view.reshape(h2 // 2, 2, w2 // 2, 2).mean(axis=(1, 3), dtype=np.float32)
 
     def _build_mipmap_levels(self, image: np.ndarray) -> None:
+        """Build a pyramid of downsampled levels for high-quality zooming.
+
+                        Args:
+                            image: Input image array used by the computation.
+                    
+        """
         self._mipmap_levels = []
         base = np.asarray(image, dtype=np.float32)
         self._mipmap_levels.append(base)
@@ -1095,6 +1216,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._current_mipmap_level = -1
 
     def _compute_target_mipmap_level(self) -> int:
+        """Select mipmap level that best matches current visible resolution.
+
+            Returns:
+                Best mipmap pyramid level for the current zoom and viewport.
+        """
         if not self._mipmap_levels or self.p1 is None or self.img_orig is None:
             return 0
 
@@ -1123,6 +1249,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return max(0, min(level, len(self._mipmap_levels) - 1))
 
     def _set_display_image(self, image: np.ndarray) -> None:
+        """Push image data into the display item with current quality mode.
+
+                        Args:
+                            image: Input image array used by the computation.
+                    
+        """
         if self.img_orig is None:
             return
 
@@ -1139,6 +1271,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.img_orig.setImage(self._display_image_full_res, autoLevels=False, levels=(0.0, 1.0))
 
     def _on_view_range_changed(self, *_args, force: bool = False) -> None:
+        """Update displayed mipmap image after pan/zoom range changes.
+
+            Args:
+                *_args: Additional callback arguments from Qt signal emissions.
+                force: When True, refreshes display state even if cached values match.
+        """
         if self.img_orig is None:
             return
         if self._render_quality_mode() != RESAMPLING_HIGH:
@@ -1154,6 +1292,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.img_orig.setImage(self._mipmap_levels[level], autoLevels=False, levels=(0.0, 1.0))
 
     def _update_image_display(self):
+        """Render source data into the image item using tone and colormap settings."""
         if self.data is None or self.img_orig is None:
             if self.view_mode not in {"fft", "inverse_fft"}:
                 return
@@ -1242,19 +1381,28 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 pass
 
     def setup_keyboard_shortcuts(self):
+        """Configure keyboard shortcuts for common image operations.
+        
+        Sets up Delete key for removing FFT regions and other navigation shortcuts.
+        """
         delete_shortcut = QtGui.QShortcut(QtGui.QKeySequence.Delete, self)
-        delete_shortcut.activated.connect(self._delete_selected_roi)
+        delete_shortcut.activated.connect(self.fft_manager.delete_selected_roi)
 
         backspace_shortcut = QtGui.QShortcut(
             QtGui.QKeySequence(QtCore.Qt.Key_Backspace), self
         )
-        backspace_shortcut.activated.connect(self._delete_selected_roi)
+        backspace_shortcut.activated.connect(self.fft_manager.delete_selected_roi)
 
         escape_shortcut = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self)
-        escape_shortcut.activated.connect(self._exit_measure_mode)
+        escape_shortcut.activated.connect(self.measurements.exit_measure_mode)
 
     def _set_colormap_by_name(self, name: str) -> None:
-        """Set the active colormap by name and update the button label."""
+        """Set the active colormap by name and update the button label.
+
+                        Args:
+                            name: Name identifier used to locate or label an entity.
+                    
+        """
 
         if not self._available_colormaps:
             return
@@ -1306,6 +1454,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         logger.debug(f"Colormap cycled backward to: {current_cmap}")
 
     def _refresh_transform_data(self):
+        """Refresh cached FFT/inverse-FFT data from the current source region."""
         logger.debug(
             "Refreshing transform data: mode=%s source_shape=%s last_region_id=%s",
             self.view_mode,
@@ -1318,6 +1467,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self._compute_inverse_fft_from_region()
 
     def _compute_fft(self):
+        """Compute and cache FFT magnitude/complex arrays for the source ROI."""
         if self._source_region is None or self.ax_x is None or self.ax_y is None:
             logger.debug("Skipping FFT compute: missing source region or axes")
             return
@@ -1351,6 +1501,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._inverse_fft_cache = None
 
     def _compute_inverse_fft_from_region(self):
+        """Compute inverse FFT image from the current source-region data."""
         if self._source_region is None or self.ax_x is None or self.ax_y is None:
             logger.debug("Skipping inverse FFT compute: missing source region or axes")
             return
@@ -1379,66 +1530,31 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     # Vim-style command handling -------------------------------------
 
     def eventFilter(self, obj, event):  # type: ignore[override]
-        """Capture ':' globally when this window is active."""
-        if (
-            self.isActiveWindow()
-            and event.type() == QtCore.QEvent.KeyPress
-        ):
-            key_event = event  # QKeyEvent
-            # Enter command mode on ':' with no modifiers
-            if getattr(key_event, "text", lambda: "")() == ":" and not key_event.modifiers():
-                self._enter_command_mode()
-                return True
+        """Capture ':' globally when this window is active.
 
-            # Allow Esc to cancel command mode
-            if (
-                self.command_edit is not None
-                and self.command_edit.isVisible()
-                and getattr(key_event, "key", lambda: None)() == QtCore.Qt.Key_Escape
-            ):
-                self._exit_command_mode()
-                return True
+            Args:
+                obj: QObject currently being filtered by the event filter.
+                event: Qt drag/drop or input event provided by the GUI framework.
+        """
+        if self._command_mode.handle_key_event(self.isActiveWindow(), event):
+            return True
 
         return super().eventFilter(obj, event)
 
     def _enter_command_mode(self) -> None:
-        enter_command_mode(self.command_edit)
+        """Move focus into command-line mode for vim-style commands."""
+        self._command_mode.enter_mode()
 
     def _exit_command_mode(self) -> None:
-        focus_target = self.glw if hasattr(self.glw, "setFocus") else None
-        exit_command_mode(self.command_edit, focus_target=focus_target)
+        """Exit command mode and restore focus to the graphics widget."""
+        self._command_mode.exit_mode()
 
     def _execute_command_from_line(self) -> None:
-        if self.command_edit is None:
-            return
-
-        parsed = parse_command_input(self.command_edit.text())
-        if parsed is None:
-            self._exit_command_mode()
-            return
-
-        cmd, arg = parsed
-
-        handled = self._run_vim_command(cmd, arg)
-        if not handled:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Command",
-                f"Unknown command: {cmd}",
-            )
-
-        self._exit_command_mode()
-
-    def _run_vim_command(self, cmd: str, arg: str) -> bool:
-        return self.commands.run_vim_command(cmd, arg)
-
-    def _open_file_by_name(self, filename: str) -> None:
-        self.commands.open_file_by_name(filename)
-
-    def _open_directory_fuzzy_view(self) -> None:
-        self.commands.open_directory_fuzzy_view()
+        """Parse and execute the current command-line text input."""
+        self._command_mode.execute_from_line()
 
     def _open_adjust_dialog(self):
+        """Open or focus the tone-curve adjustment dialog for current view data."""
         if self.view_mode == "fft" and self._magnitude_spectrum is None:
             return
 
@@ -1505,40 +1621,32 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
 
-    def _delete_selected_roi(self):
-        self.fft_manager.delete_selected_roi()
-
     def _setup_menu_bar(self) -> None:
-        # Get the comprehensive menu configuration
-        config = create_shared_menu_config()
-        
-        # Create callbacks mapping for this window
-        callbacks_map = {
+        """Create and wire the menu bar for image-viewer actions."""
+        config = build_menu_config_for_role(
+            role="viewer",
+            callbacks_map={
             "Open": self._open_file_dialog,
             "Save View": self._save_view_and_ffts,
             "Build Figure": lambda: self._show_not_implemented("Build Figure"),
             "Calibrate": self._open_calibration_dialog,
             "Parameters": self._open_parameters_dialog,
-            "FFT": lambda _checked=False: self._add_new_fft(),
-            "Inverse FFT": lambda _checked=False: self._add_new_inverse_fft(),
+            "FFT": lambda _checked=False: self.fft_manager.add_new_fft(),
+            "Inverse FFT": lambda _checked=False: self.fft_manager.add_new_inverse_fft(),
             "Adjust": self._open_adjust_dialog,
             "Distance": self._menu_start_distance_measurement,
-            "History": self._show_measurement_history,
+            "History": self.measurements.show_measurement_history,
             "Intensity": lambda: self._show_not_implemented("Intensity"),
             "Profile": self._menu_start_profile_measurement,
             "Metadata": self._show_metadata_window,
             "Render Diagnostics": self._show_render_diagnostics,
             "Cycle Colormap Forward": self._cycle_colormap_forward,
             "Cycle Colormap Backward": self._cycle_colormap_backward,
-            "Keyboard Shortcuts": self._show_keyboard_shortcuts,
-            "About": self._show_about_dialog,
-            "README": self._show_readme,
-        }
-        
-        # Update config with actual callbacks
-        for item in config:
-            if item.title in callbacks_map:
-                item.callback = callbacks_map[item.title]
+            "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
+            "About": self.help_actions.show_about,
+            "README": self.help_actions.show_readme,
+            },
+        )
         
         # Determine if an image is available for this viewer
         if self.view_mode == "image":
@@ -1569,40 +1677,19 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
 
     def _show_not_implemented(self, feature_name: str) -> None:
+        """Show a generic placeholder message for unfinished features.
+
+            Args:
+                feature_name: Feature label shown in the not-implemented dialog.
+        """
         QtWidgets.QMessageBox.information(
             self,
             feature_name,
             f"{feature_name} is planned but not implemented yet.",
         )
 
-    def _show_keyboard_shortcuts(self) -> None:
-        """Display keyboard shortcuts help dialog."""
-        config = create_shared_menu_config()
-        
-        extra_shortcuts = {
-            "Enter command mode": ":",
-            "Exit command mode": "Esc",
-            "Delete selected ROI": "Delete",
-        }
-        
-        show_keyboard_shortcuts_dialog(
-            self,
-            config,
-            extra_shortcuts,
-            additional_colormaps=self._available_colormaps
-        )
-
-    def _show_readme(self) -> None:
-        """Display README content in a scrollable dialog."""
-        show_readme_dialog(self)
-
-    def _show_about_dialog(self) -> None:
-        """Display the About dialog with app information."""
-        show_about_dialog(self)
-        logger.debug("Requested about dialog")
-
-
     def _show_render_diagnostics(self) -> None:
+        """Display current rendering backend and quality diagnostics."""
         gl_available = hardware_acceleration_available(force_refresh=True)
         effective = global_render_config_options(self._render_settings, hardware_available=gl_available)
 
@@ -1667,6 +1754,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         dialog.show()
 
     def _open_parameters_dialog(self) -> None:
+        """Open render-parameter dialog and apply accepted settings."""
         current = load_render_settings()
         updated = open_parameters_dialog(self, current)
         if updated is None:
@@ -1682,21 +1770,20 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._update_image_display()
 
     def _open_file_dialog(self) -> None:
+        """Open file picker and load selected image into a new viewer window."""
         start_dir = str(Path(self.file_path).parent) if self.file_path else str(Path.cwd())
         selected_file = open_file_dialog(self, start_dir)
         if selected_file:
             open_image_file(selected_file)
 
     def _menu_start_distance_measurement(self) -> None:
+        """Handle menu action that starts distance measurement mode."""
         logger.debug("Menu action: start distance measurement")
-        if self.btn_measure is not None and not self.btn_measure.isChecked():
-            self.btn_measure.setChecked(True)
-        self._prepare_for_measurement_input()
-        self.measurements.toggle_line_measurement()
+        self.measurements.start_distance_measurement()
 
     def _menu_start_profile_measurement(self) -> None:
+        """Handle menu action that starts profile measurement mode."""
         logger.debug("Menu action: start profile measurement")
-        self._prepare_for_measurement_input()
         self.measurements.start_profile_measurement()
     
 
@@ -1731,7 +1818,15 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     
     def _child_transform_segment(self, parent: "ImageViewerWindow", child: "ImageViewerWindow") -> str:
-        """Return child segment label relative to parent, e.g. FFT0 or iFFT0."""
+        """Return child segment label relative to parent, e.g. FFT0 or iFFT0.
+
+            Args:
+                parent: Optional parent widget that owns the dialog window.
+                child: Child transform window being evaluated in the export tree.
+
+            Returns:
+                Human-readable segment describing how a child transform derives from its parent.
+        """
         try:
             for i, w in enumerate(parent.fft_windows or []):
                 if w is child:
@@ -1747,7 +1842,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return "iFFT0" if mode == "inverse_fft" else "FFT0"
 
     def _transform_chain_label(self, window: "ImageViewerWindow") -> str:
-        """Build chain label from this root window to target transform window."""
+        """Build chain label from this root window to target transform window.
+
+            Args:
+                window: Transform window for which a chain label is being generated.
+
+            Returns:
+                Full transform lineage label used in exported overlays and diagnostics.
+        """
         parts: list[str] = []
         cur = window
         visited: set[int] = set()
@@ -1973,79 +2075,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "\n".join(message_lines),
         )
 
-    def _add_new_fft(self, x_offset=None, y_offset=None, w=None, h=None):
-        self.fft_manager.add_new_fft(x_offset, y_offset, w, h)
-
-    def _on_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem):
-        self.fft_manager.on_fft_finished(fft_box, fft_id, text_item)
-
-    def _add_new_inverse_fft(self, x_offset=None, y_offset=None, w=None, h=None):
-        self.fft_manager.add_new_inverse_fft(x_offset, y_offset, w, h)
-
-    def _on_fft_box_clicked(self, fft_box: pg.RectROI):
-        self.fft_manager.on_fft_box_clicked(fft_box)
-
-    def _on_fft_box_double_clicked(
-        self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem
-    ):
-        self.fft_manager.on_fft_box_double_clicked(fft_box, fft_id, text_item)
-
-    def _on_inverse_fft_finished(self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem):
-        self.fft_manager.on_inverse_fft_finished(fft_box, fft_id, text_item)
-
-    def _on_inverse_fft_box_clicked(self, fft_box: pg.RectROI):
-        self.fft_manager.on_inverse_fft_box_clicked(fft_box)
-
-    def _on_inverse_fft_box_double_clicked(
-        self, fft_box: pg.RectROI, fft_id: int, text_item: pg.TextItem
-    ):
-        self.fft_manager.on_inverse_fft_box_double_clicked(fft_box, fft_id, text_item)
-
-    def _exit_measure_mode(self):
-        self.measurements.exit_measure_mode()
-        
-
-    def _on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]):
-        self.measurements.on_line_drawn(p1, p2)
-
-    def _on_measurement_label_clicked(self, label: pg.TextItem):
-        self.measurements.on_measurement_label_clicked(label)
-
-    def _clear_measurements(self):
-        self.measurements.clear_measurements()
-
-    def clear_measurements_from_history(self):
-        self.measurements.clear_measurements_from_history()
-
-    def _delete_selected_measurement(self):
-        self.measurements.delete_selected_measurement()
-
-    def delete_measurement_by_history_id(self, entry_id: int, entry_type: str):
-        self.measurements.delete_measurement_by_history_id(entry_id, entry_type)
-
-    def open_measurement_by_history_id(self, entry_id: int, entry_type: str):
-        self.measurements.open_measurement_by_history_id(entry_id, entry_type)
-
-    def rename_measurement_by_history_id(self, entry_id: int, entry_type: str, new_text: str):
-        self.measurements.rename_measurement_by_history_id(entry_id, entry_type, new_text)
-
-    def _set_label_fill(self, text_item: pg.TextItem, brush: pg.QtGui.QBrush):
-        self.measurements.set_label_fill(text_item, brush)
-
-    def delete_measurement_by_label(self, label_text: str):
-        self.measurements.delete_measurement_by_label(label_text)
-
-    def _format_measurement_label(
-        self, result: dict, measurement_id: Optional[int] = None
-    ) -> str:
-        return self.measurements.format_measurement_label(result, measurement_id)
-
-    def _show_measurement_history(self):
-        self.measurements.show_measurement_history()
-
-    def _add_to_measurement_history(self, measurement_text: str):
-        self.measurements.add_to_measurement_history(measurement_text)
-
     # ------------------------------------------------------------------
     # Metadata helpers for export overlays
     # ------------------------------------------------------------------
@@ -2053,13 +2082,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _build_export_overlay_label(self) -> str:
         """Return a one-line label for export overlays.
 
-        Uses *original* metadata to add:
-        - Microscope: second word of ``ObjectInfo.ExperimentalDescription["Microscope"]``
-        - Mode: first word of ``ObjectInfo.ExperimentalDescription["Mode"]``
-        - AcquireDate: full string from ``ObjectInfo["AcquireDate"]``
-
-        Final format:
-            ``<filename> | <Microscope-second-word> | <Mode-first-word> | <AcquireDate>``
+            Returns:
+                Overlay label string containing file and transform context for export.
         """
 
         # File name
@@ -2126,6 +2150,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         return " | ".join(str(p) for p in parts if p)
 
     def _show_metadata_window(self):
+        """Open or refresh the metadata window for the current signal."""
         if self.signal is None:
             QtWidgets.QMessageBox.information(
                 self, "Metadata", "No metadata available for this image."

@@ -34,7 +34,15 @@ from viewer_settings import (
 
 
 def _parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    """Parse TEMinator CLI arguments and return remaining Qt arguments."""
+    """Parse TEMinator CLI arguments and return remaining Qt arguments.
+
+                Args:
+                    argv: Input value for argv.
+
+                Returns:
+                    Detailed parameter description.
+            
+    """
 
     parser = argparse.ArgumentParser(
         prog="teminator",

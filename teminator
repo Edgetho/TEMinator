@@ -9,14 +9,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/environment.yml"
+ENV_FILE_BASE="$SCRIPT_DIR/environment.yml"
+ENV_FILE_LINUX="$SCRIPT_DIR/environment.linux.yml"
+ENV_FILE="$ENV_FILE_BASE"
 APP_FILE="$SCRIPT_DIR/app.py"
+
+if [[ "$(uname -s)" == "Linux" && -f "$ENV_FILE_LINUX" ]]; then
+  ENV_FILE="$ENV_FILE_LINUX"
+fi
 
 print_help() {
   cat <<EOF
 Usage: $(basename "$0") [--debug-qt] [--build-env] [--help] [app-args...]
 
 Runs TEMinator inside the conda/mamba environment defined by environment.yml.
+On Linux, if environment.linux.yml exists, the launcher uses it automatically.
 
 Options:
   --debug-qt      Enable Qt plugin debug logging for this run (QT_DEBUG_PLUGINS=1).

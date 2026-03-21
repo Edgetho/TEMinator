@@ -49,7 +49,12 @@ python app.py --force-software
 ```
 ### Environment Configuration
 
-From the project root, create the conda/mamba environment defined in `environment.yml`:
+From the project root, create the conda/mamba environment:
+
+- macOS: use `environment.yml`
+- Linux (Wayland plugin included): use `environment.linux.yml`
+
+macOS / generic:
 
 ```bash
 mamba env create -f environment.yml
@@ -61,16 +66,22 @@ or:
 conda env create -f environment.yml
 ```
 
+Linux (includes `qt-wayland`):
+
+```bash
+mamba env create -f environment.linux.yml
+```
+
 This creates the `teminator` environment with Python 3.14, NumPy, pyqtgraph, PyQt 5.15, and HyperSpy.
 
 If you prefer to use either`pip` or `venv` instead, install the packages listed in `environment.yml` manually.
 
 ### Linux Wayland setup (optional)
 
-If you want to run on Wayland with OpenGL acceleration, ensure the environment includes the Qt Wayland plugin:
+If you want to run on Wayland with OpenGL acceleration, ensure the environment includes the Qt Wayland plugin (already included by `environment.linux.yml`):
 
 ```bash
-mamba env update -n teminator -f environment.yml --prune
+mamba env update -n teminator -f environment.linux.yml --prune
 ```
 
 Then launch with:
@@ -260,6 +271,16 @@ Development notes
 - The project targets Python 3.14 and PyQt via `pyqtgraph.Qt` for flexibility across Qt bindings.
 - HyperSpy is used only for I/O and metadata; image display and interaction is handled entirely by pyqtgraph.
 - GUI classes are kept in a single module for ease of navigation; numerical work is confined to `utils.py`.
+
+### Generating API docs
+
+Generate HTML API documentation with `pdoc` from the project root:
+
+```bash
+pdoc --output-dir docs *.py
+```
+
+This writes module docs to the `docs/` directory (for example `docs/index.html`).
 
 License and citation
 --------------------
