@@ -2127,8 +2127,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
     def _save_view_and_ffts(self) -> None:
         """Save the current view (with annotations) and any FFT windows and their children, recursively.
 
-        The main image view is saved in a user-selected format (PNG, TIFF,
-        or JPEG). All FFT views are saved as PNG files.
+        The save location, base filename, and output format are selected through
+        a single system file picker. Main, FFT, and profile exports all use
+        the same selected image format.
         """
 
         if self.data is None or self.glw is None:
@@ -2140,71 +2141,55 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
         logger.debug("Saving view/FFTs for file: %s", self.file_path)
 
-        # Choose output directory
+        # Resolve default location/name for the save picker
         try:
             default_dir = str(Path(self.file_path).parent)
         except Exception:
             default_dir = str(Path.cwd())
 
-        directory = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Select Output Directory",
-            default_dir,
-        )
-        if not directory:
-            return
-
-        directory_path = Path(directory)
-
-        # Choose base name
         suggested_base = Path(self.file_path).stem or "image"
-        base_name, ok = QtWidgets.QInputDialog.getText(
+        initial_path = str(Path(default_dir) / f"{suggested_base}_view.png")
+
+        file_filters = "PNG (*.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg)"
+        selected_path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "Base File Name",
-            "Base name for saved images:",
-            text=suggested_base,
+            "Save Figure Set",
+            initial_path,
+            file_filters,
         )
-        if not ok:
-            return
-        base_name = base_name.strip()
-        if not base_name:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Save Images",
-                "Base name cannot be empty.",
-            )
+        if not selected_path:
             return
 
-        # Choose format for main view
-        format_labels = ["PNG (.png)", "TIFF (.tif)", "JPEG (.jpg)"]
-        format_map = {
-            0: ("PNG", ".png"),
-            1: ("TIFF", ".tif"),
-            2: ("JPEG", ".jpg"),
-        }
+        main_path = Path(selected_path)
 
-        fmt_label, ok = QtWidgets.QInputDialog.getItem(
-            self,
-            "Image Format",
-            "Format for main view:",
-            format_labels,
-            0,
-            False,
-        )
-        if not ok:
-            return
+        filter_upper = (selected_filter or "").upper()
+        if "TIFF" in filter_upper:
+            fmt_name = "TIFF"
+            default_ext = ".tif"
+        elif "JPEG" in filter_upper:
+            fmt_name = "JPEG"
+            default_ext = ".jpg"
+        else:
+            fmt_name = "PNG"
+            default_ext = ".png"
 
-        try:
-            fmt_index = format_labels.index(fmt_label)
-        except ValueError:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Save Images",
-                "Unknown image format selected.",
-            )
-            return
+        suffix = main_path.suffix.lower()
+        if suffix in {".png"}:
+            fmt_name, ext = "PNG", ".png"
+        elif suffix in {".tif", ".tiff"}:
+            fmt_name, ext = "TIFF", suffix
+        elif suffix in {".jpg", ".jpeg"}:
+            fmt_name, ext = "JPEG", suffix
+        else:
+            ext = default_ext
+            main_path = main_path.with_suffix(ext)
 
-        fmt_name, ext = format_map.get(fmt_index, ("PNG", ".png"))
+        directory_path = main_path.parent
+        typed_name = main_path.stem
+        if typed_name.endswith("_view") and len(typed_name) > len("_view"):
+            base_name = typed_name[: -len("_view")]
+        else:
+            base_name = typed_name
 
         # Compose extra label for export using metadata (file, instrument,
         # acquisition mode, and AcquireDate from original metadata).
@@ -2236,7 +2221,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             return
 
-        main_path = directory_path / f"{base_name}_view{ext}"
         if not pixmap.save(str(main_path), fmt_name):
             QtWidgets.QMessageBox.warning(
                 self,
@@ -2253,7 +2237,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-        # Capture all open FFT windows as PNGs, with metadata + ROI label
+        # Capture all open FFT windows using the selected main-view format
         fft_saved = 0
         transform_windows = list(self._iter_transform_windows_recursive())
         for idx, fft_window in enumerate(transform_windows, start=1):
@@ -2305,8 +2289,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 continue
 
             chain = self._transform_chain_label(fft_window)
-            fft_path = directory_path / f"{base_name}_{chain}.png"
-            if fft_pixmap.save(str(fft_path), "PNG"):
+            fft_path = directory_path / f"{base_name}_{chain}{ext}"
+            if fft_pixmap.save(str(fft_path), fmt_name):
                 fft_saved += 1
                 logger.debug("Saved FFT view: %s", fft_path)
 
@@ -2317,13 +2301,43 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
+        # Capture open profile views using the selected main-view format
+        profile_saved = 0
+        profile_records = getattr(self, "profile_measurement_items", {}) or {}
+        for profile_id, record in sorted(profile_records.items(), key=lambda item: item[0]):
+            if not isinstance(record, dict):
+                continue
+
+            profile_window = record.get("window")
+            if profile_window is None:
+                continue
+
+            try:
+                plot_widget = getattr(profile_window, "plot_widget", None)
+                capture_widget = plot_widget if plot_widget is not None else profile_window
+                profile_pixmap = capture_widget.grab()
+            except Exception:
+                continue
+
+            profile_path = directory_path / f"{base_name}_profile{profile_id}{ext}"
+            if profile_pixmap.save(str(profile_path), fmt_name):
+                profile_saved += 1
+                logger.debug("Saved profile view: %s", profile_path)
+
         message_lines = [f"Saved main view to:\n{main_path}"]
         if fft_saved:
-            message_lines.append(f"Saved {fft_saved} FFT view PNG file(s).")
+            message_lines.append(f"Saved {fft_saved} FFT view {fmt_name} file(s).")
         else:
             message_lines.append(
-                "No FFT windows were open; only the main view was saved."
+                "No FFT windows were open."
             )
+
+        if profile_saved:
+            message_lines.append(
+                f"Saved {profile_saved} profile view {fmt_name} file(s)."
+            )
+        else:
+            message_lines.append("No profile windows were open; no profile views were saved.")
 
         QtWidgets.QMessageBox.information(
             self,

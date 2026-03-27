@@ -546,6 +546,7 @@ class MeasurementController:
             intensities,
             x_axis_label=x_axis_label,
             trace_colors=trace_colors if isinstance(trace_colors, dict) else None,
+            on_refresh=lambda pid=entry_id: self.refresh_profile_measurement(pid),
             parent=viewer,
         )
         profile_window.show()
@@ -825,6 +826,7 @@ class MeasurementController:
             intensities,
             x_axis_label=x_axis_label,
             trace_colors=trace_colors,
+            on_refresh=lambda pid=profile_id: self.refresh_profile_measurement(pid),
             parent=viewer,
         )
         profile_window.show()
@@ -841,6 +843,8 @@ class MeasurementController:
             "title": f"Profile Measurement #{profile_id}",
             "history_text": line_label,
             "x_axis_label": x_axis_label,
+            "p1": (float(p1[0]), float(p1[1])),
+            "p2": (float(p2[0]), float(p2[1])),
         }
         self.add_to_measurement_history_entry(
             line_label,
@@ -859,10 +863,11 @@ class MeasurementController:
         self,
         p1: Tuple[float, float],
         p2: Tuple[float, float],
+        create_line_item: bool = True,
     ) -> tuple[
         np.ndarray,
         np.ndarray | Dict[str, np.ndarray],
-        pg.PlotDataItem,
+        pg.PlotDataItem | None,
         str,
         Dict[str, Any] | None,
     ] | None:
@@ -1068,8 +1073,10 @@ class MeasurementController:
             x_axis_label = "Distance (px)"
             self.logger.debug("Profile x-axis uses pixel units (uncalibrated axes)")
 
-        line_item = pg.PlotDataItem([p1[0], p2[0]], [p1[1], p2[1]], pen=DRAWN_LINE_PEN)
-        viewer.p1.addItem(line_item)
+        line_item: pg.PlotDataItem | None = None
+        if create_line_item:
+            line_item = pg.PlotDataItem([p1[0], p2[0]], [p1[1], p2[1]], pen=DRAWN_LINE_PEN)
+            viewer.p1.addItem(line_item)
         self.logger.debug(
             "Profile extracted: p1_px=(%.3f, %.3f) p2_px=(%.3f, %.3f) samples=%s",
             x0,
@@ -1079,6 +1086,87 @@ class MeasurementController:
             sample_count,
         )
         return distances, intensities, line_item, x_axis_label, trace_colors
+
+    def refresh_profile_measurement(self, profile_id: int) -> None:
+        """Recompute and refresh a stored profile using current image-view state."""
+        viewer = self.viewer
+        record = viewer.profile_measurement_items.get(profile_id)
+        if record is None:
+            self.logger.debug("Profile refresh ignored: id=%s not found", profile_id)
+            return
+
+        p1 = record.get("p1")
+        p2 = record.get("p2")
+        if not (
+            isinstance(p1, tuple)
+            and isinstance(p2, tuple)
+            and len(p1) == 2
+            and len(p2) == 2
+        ):
+            self.logger.debug("Profile refresh ignored: missing endpoints for id=%s", profile_id)
+            return
+
+        refreshed = self._extract_line_profile(
+            (float(p1[0]), float(p1[1])),
+            (float(p2[0]), float(p2[1])),
+            create_line_item=False,
+        )
+        if refreshed is None:
+            self.logger.debug("Profile refresh failed: extraction returned None for id=%s", profile_id)
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Profile",
+                "Could not refresh profile from the current view.",
+            )
+            return
+
+        distances, intensities, _line_item, x_axis_label, trace_colors = refreshed
+        record["distances"] = distances
+        record["intensities"] = intensities
+        record["x_axis_label"] = x_axis_label
+        record["trace_colors"] = trace_colors
+
+        history_text = f"P#{profile_id} profile ({len(distances)} pts)"
+        record["history_text"] = history_text
+
+        window = record.get("window")
+        if isinstance(window, LineProfileWindow):
+            try:
+                window.update_profile_data(
+                    distances=distances,
+                    intensities=intensities,
+                    x_axis_label=x_axis_label,
+                    trace_colors=trace_colors,
+                )
+            except RuntimeError:
+                record["window"] = None
+
+        if viewer.measurement_history_window is not None:
+            try:
+                for row in range(viewer.measurement_history_window.list_widget.count()):
+                    item = viewer.measurement_history_window.list_widget.item(row)
+                    if item is None:
+                        continue
+                    metadata = item.data(QtCore.Qt.UserRole)
+                    if (
+                        isinstance(metadata, dict)
+                        and metadata.get("id") == profile_id
+                        and metadata.get("type") == "profile"
+                    ):
+                        metadata["text"] = history_text
+                        item.setText(history_text)
+                        item.setData(QtCore.Qt.UserRole, metadata)
+                        if 0 <= row < len(viewer.measurement_history_window.measurements):
+                            viewer.measurement_history_window.measurements[row] = metadata
+                        break
+            except Exception:
+                pass
+
+        self.logger.debug(
+            "Profile measurement refreshed: id=%s samples=%s",
+            profile_id,
+            len(distances),
+        )
 
     @staticmethod
     def _sample_image_bilinear(

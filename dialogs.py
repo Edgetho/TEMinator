@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pyqtgraph as pg
@@ -406,6 +406,7 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         intensities: np.ndarray | Dict[str, np.ndarray],
         x_axis_label: str = "Distance (px)",
         trace_colors: Optional[Dict[str, Any]] = None,
+        on_refresh: Optional[Callable[[], None]] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         """Initialize the line profile plotting window.
@@ -417,11 +418,13 @@ class LineProfileWindow(QtWidgets.QMainWindow):
                 trace name -> intensity values.
             x_axis_label: Label for the X axis.
             trace_colors: Optional mapping of trace name to pyqtgraph-compatible color.
+            on_refresh: Optional callback to refresh profile from current view state.
             parent: Optional parent widget.
         """
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(640, 420)
+        self._on_refresh = on_refresh
 
         central = QtWidgets.QWidget(self)
         self.setCentralWidget(central)
@@ -430,8 +433,51 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
+        self.plot_widget.setLabel("left", "Intensity")
+
+        self._render_profile(
+            distances=distances,
+            intensities=intensities,
+            x_axis_label=x_axis_label,
+            trace_colors=trace_colors,
+        )
+
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.addStretch()
+        self.btn_refresh = QtWidgets.QPushButton("Refresh")
+        self.btn_refresh.setToolTip("Recompute this profile from the current image view")
+        self.btn_refresh.setEnabled(self._on_refresh is not None)
+        self.btn_refresh.clicked.connect(self._refresh_requested)
+        button_row.addWidget(self.btn_refresh)
+
+        layout.addWidget(self.plot_widget)
+        layout.addLayout(button_row)
+
+        logger.debug(
+            "LineProfileWindow created: title=%s points=%s x_axis=%s",
+            title,
+            len(distances),
+            x_axis_label,
+        )
+
+    def _render_profile(
+        self,
+        distances: np.ndarray,
+        intensities: np.ndarray | Dict[str, np.ndarray],
+        x_axis_label: str,
+        trace_colors: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Render one or more profile traces into the plot widget."""
+        plot_item = self.plot_widget.getPlotItem()
+        legend = plot_item.legend
+        if legend is not None:
+            plot_item.scene().removeItem(legend)
+            plot_item.legend = None
+
+        self.plot_widget.clear()
         self.plot_widget.setLabel("bottom", x_axis_label)
         self.plot_widget.setLabel("left", "Intensity")
+
         if isinstance(intensities, dict):
             if intensities:
                 self.plot_widget.addLegend(offset=(10, 10))
@@ -448,16 +494,30 @@ class LineProfileWindow(QtWidgets.QMainWindow):
                     pen=pg.mkPen(color, width=2),
                     name=str(trace_name),
                 )
-        else:
-            self.plot_widget.plot(distances, intensities, pen=pg.mkPen("b", width=2))
-        layout.addWidget(self.plot_widget)
+            return
 
-        logger.debug(
-            "LineProfileWindow created: title=%s points=%s x_axis=%s",
-            title,
-            len(distances),
-            x_axis_label,
+        self.plot_widget.plot(distances, intensities, pen=pg.mkPen("b", width=2))
+
+    def update_profile_data(
+        self,
+        distances: np.ndarray,
+        intensities: np.ndarray | Dict[str, np.ndarray],
+        x_axis_label: str,
+        trace_colors: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Update existing window plot with freshly sampled profile data."""
+        self._render_profile(
+            distances=distances,
+            intensities=intensities,
+            x_axis_label=x_axis_label,
+            trace_colors=trace_colors,
         )
+
+    def _refresh_requested(self) -> None:
+        """Invoke the refresh callback for this profile window."""
+        if self._on_refresh is None:
+            return
+        self._on_refresh()
 
 
 class MetadataWindow(QtWidgets.QMainWindow):
