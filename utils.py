@@ -3,16 +3,18 @@
 # See LICENSE for full license terms.
 
 """Utility functions for FFT, measurements, image analysis, and dialogs."""
-import numpy as np
-from typing import Tuple, Optional, List, Dict, Callable, Any
-import subprocess
-import os
-import logging
+
 import html
+import logging
+import os
+import subprocess
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 import unit_utils
-from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ _window_cache = {}
 def get_git_commit_info() -> Tuple[str, str, str]:
     """
     Get the commit date, short hash, and branch of the current git branch.
-    
+
     Returns:
         A tuple of (commit_date, short_hash, branch_name) where commit_date is in format "YYYY-MM-DD"
         Falls back to ("Version 1.0", "", "") if git info unavailable
@@ -32,17 +34,17 @@ def get_git_commit_info() -> Tuple[str, str, str]:
     try:
         repo_dir = os.path.dirname(os.path.abspath(__file__))
         result = subprocess.run(
-            ['git', 'log', '-1', '--format=%cI %h %D'],
+            ["git", "log", "-1", "--format=%cI %h %D"],
             cwd=repo_dir,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             parts = result.stdout.strip().split(maxsplit=2)
             if len(parts) >= 2:
                 # Extract date part from ISO format (YYYY-MM-DDTHH:MM:SS+ZZ:ZZ)
-                commit_date = parts[0].split('T')[0]
+                commit_date = parts[0].split("T")[0]
                 short_hash = parts[1]
                 branch_name = ""
                 if len(parts) >= 3:
@@ -56,14 +58,14 @@ def get_git_commit_info() -> Tuple[str, str, str]:
                 return commit_date, short_hash, branch_name
     except Exception:
         pass
-    
+
     return "Version 1.0", "", ""
 
 
 def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
     """
     Display the About TEMinator dialog.
-    
+
     Args:
         parent_widget: The parent widget for the dialog
     """
@@ -73,7 +75,7 @@ def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
         version_str += f" ({short_hash})"
     if branch_name:
         version_str += f" [{branch_name}]"
-    
+
     about_text = (
         "<b>TEMinator</b><br>"
         f"{version_str}<br>"
@@ -87,24 +89,26 @@ def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
         "<br>"
         "<a href='https://github.com/Edgetho/TEMinator'>GitHub Repository</a>"
     )
-    
+
     dialog = QtWidgets.QDialog(parent_widget)
     dialog.setWindowTitle("About TEMinator")
     dialog.setSizeGripEnabled(False)
-    
+
     main_layout = QtWidgets.QVBoxLayout()
     main_layout.setSizeConstraint(QtWidgets.QLayout.SetFixedSize)
-    
+
     # Top layout with icon and text
     top_layout = QtWidgets.QHBoxLayout()
-    
+
     # Add app icon on the left
     icon_label = QtWidgets.QLabel()
     icon_pixmap = QtGui.QPixmap("app_icon.png")
     if not icon_pixmap.isNull():
-        icon_label.setPixmap(icon_pixmap.scaledToWidth(80, QtCore.Qt.SmoothTransformation))
+        icon_label.setPixmap(
+            icon_pixmap.scaledToWidth(80, QtCore.Qt.SmoothTransformation)
+        )
         top_layout.addWidget(icon_label)
-    
+
     # Add text on the right
     text_label = QtWidgets.QLabel(about_text)
     text_label.setOpenExternalLinks(True)
@@ -112,14 +116,14 @@ def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
     text_label.setWordWrap(True)
     text_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
     top_layout.addWidget(text_label)
-    
+
     main_layout.addLayout(top_layout)
-    
+
     # Add close button
     button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
     button_box.rejected.connect(dialog.close)
     main_layout.addWidget(button_box)
-    
+
     dialog.setLayout(main_layout)
     dialog.adjustSize()
     dialog.exec_()
@@ -129,12 +133,12 @@ def show_about_dialog(parent_widget: QtWidgets.QWidget) -> None:
 def _plain_text_to_pre_html(content: str) -> str:
     """Convert plain text content into escaped HTML wrapped in a styled <pre> block.
 
-                Args:
-                    content: Input value for content.
+    Args:
+        content: Input value for content.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
     escaped_content = html.escape(content)
     return f"<pre class='mono-block'>{escaped_content}</pre>"
@@ -143,9 +147,9 @@ def _plain_text_to_pre_html(content: str) -> str:
 def _dialog_content_stylesheet() -> str:
     """Return a shared rich-text stylesheet for app-rendered dialogs.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
     return """
         body {
@@ -195,12 +199,12 @@ def _dialog_content_stylesheet() -> str:
 def _wrap_html_document(body_html: str) -> str:
     """Wrap content in a complete HTML document with shared stylesheet.
 
-                Args:
-                    body_html: Input value for body html.
+    Args:
+        body_html: Input value for body html.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
     return (
         "<html><head><style>"
@@ -221,14 +225,14 @@ def _show_text_content_dialog(
 ) -> None:
     """Render HTML/Markdown content in a consistent app-controlled dialog.
 
-                Args:
-                    parent_widget: Input value for parent widget.
-                    title: Title text displayed in the associated UI element.
-                    content: Input value for content.
-                    content_format: Input value for content format.
-                    width: Input value for width.
-                    height: Input value for height.
-            
+    Args:
+        parent_widget: Input value for parent widget.
+        title: Title text displayed in the associated UI element.
+        content: Input value for content.
+        content_format: Input value for content format.
+        width: Input value for width.
+        height: Input value for height.
+
     """
     dialog = QtWidgets.QDialog(parent_widget)
     dialog.setWindowTitle(title)
@@ -273,10 +277,10 @@ def show_keyboard_shortcuts_dialog(
 ) -> None:
     """
     Display keyboard shortcuts dialog.
-    
+
     This is a centralized dialog for showing all keyboard shortcuts, with
     support for additional shortcuts and colormaps specific to certain windows.
-    
+
     Args:
         parent_widget: The parent widget for the dialog
         menu_config: Menu configuration list from create_shared_menu_config()
@@ -386,7 +390,10 @@ def show_keyboard_shortcuts_dialog(
         add_section("Special", list(extra_shortcuts.items()))
 
     if additional_colormaps:
-        colormap_rows = [(f"Colormap: {cmap.capitalize()}", "via menu") for cmap in additional_colormaps]
+        colormap_rows = [
+            (f"Colormap: {cmap.capitalize()}", "via menu")
+            for cmap in additional_colormaps
+        ]
         add_section("Display Colormaps", colormap_rows)
 
     content_layout.addStretch(1)
@@ -400,7 +407,9 @@ def show_keyboard_shortcuts_dialog(
     # Grow dialog to fit all shortcut rows so scrollbars are not needed on typical screens.
     content_widget.adjustSize()
     margins = main_layout.contentsMargins()
-    estimated_width = content_widget.sizeHint().width() + margins.left() + margins.right() + 32
+    estimated_width = (
+        content_widget.sizeHint().width() + margins.left() + margins.right() + 32
+    )
     estimated_height = (
         header_label.sizeHint().height()
         + content_widget.sizeHint().height()
@@ -415,7 +424,9 @@ def show_keyboard_shortcuts_dialog(
         available = screen.availableGeometry()
         max_width = int(available.width() * 0.9)
         max_height = int(available.height() * 0.9)
-        dialog.resize(min(estimated_width, max_width), min(estimated_height, max_height))
+        dialog.resize(
+            min(estimated_width, max_width), min(estimated_height, max_height)
+        )
     else:
         dialog.resize(max(620, estimated_width), max(620, estimated_height))
 
@@ -425,14 +436,14 @@ def show_keyboard_shortcuts_dialog(
 def show_readme_dialog(parent_widget: QtWidgets.QWidget) -> None:
     """
     Display README content in a scrollable dialog.
-    
+
     This is a centralized dialog for displaying the README file.
-    
+
     Args:
         parent_widget: The parent widget for the dialog
     """
     readme_path = Path(__file__).parent / "README.md"
-    
+
     if not readme_path.exists():
         QtWidgets.QMessageBox.warning(
             parent_widget,
@@ -441,7 +452,7 @@ def show_readme_dialog(parent_widget: QtWidgets.QWidget) -> None:
         )
         logger.warning(f"README file not found: {readme_path}")
         return
-    
+
     try:
         with open(readme_path, "r") as f:
             readme_content = f.read()
@@ -473,7 +484,9 @@ class HelpDialogActions:
         parent_widget: QtWidgets.QWidget,
         menu_config_provider: Callable[[], List[Any]],
         extra_shortcuts_provider: Optional[Callable[[], Dict[str, str]]] = None,
-        additional_colormaps_provider: Optional[Callable[[], Optional[List[str]]]] = None,
+        additional_colormaps_provider: Optional[
+            Callable[[], Optional[List[str]]]
+        ] = None,
         logger_instance: Optional[logging.Logger] = None,
     ) -> None:
         """Create reusable help/readme/about menu callbacks.
@@ -526,32 +539,32 @@ def open_parameters_dialog(
 ) -> Optional[Dict]:
     """
     Display render parameters dialog and return updated settings if accepted.
-    
+
     This is a centralized dialog for adjusting render settings. The caller
     is responsible for applying the settings if a dict is returned.
-    
+
     Args:
         parent_widget: The parent widget for the dialog
         current_settings: Current render settings dict
         on_backend_available: Whether OpenGL backend is available
-        
+
     Returns:
         Updated settings dict if user clicked OK, None otherwise
     """
     from dialogs import RenderSettingsDialog
     from viewer_settings import hardware_acceleration_available
-    
+
     dialog = RenderSettingsDialog(parent_widget, current=current_settings)
     if dialog.exec_() != QtWidgets.QDialog.Accepted:
         return None
-    
+
     updated = dialog.selected_settings()
-    
+
     # Show warnings if applicable
     gl_available = hardware_acceleration_available()
     updated_hw = bool(updated.get("use_hardware_acceleration", True))
     current_hw = bool(current_settings.get("use_hardware_acceleration", True))
-    
+
     if updated_hw and not gl_available:
         QtWidgets.QMessageBox.warning(
             parent_widget,
@@ -565,7 +578,7 @@ def open_parameters_dialog(
             "Parameters",
             "Hardware acceleration backend change will apply fully to newly opened windows.",
         )
-    
+
     return updated
 
 
@@ -575,66 +588,72 @@ def open_file_dialog(
 ) -> Optional[str]:
     """
     Display file open dialog and return selected file path.
-    
+
     This is a centralized dialog for opening image files.
-    
+
     Args:
         parent_widget: The parent widget for the dialog
         start_dir: Starting directory (None = current working directory)
-        
+
     Returns:
         Selected file path if user clicked OK, None otherwise
     """
     from file_navigation import IMAGE_FILE_FILTER
-    
+
     if start_dir is None:
         start_dir = str(Path.cwd())
-    
+
     selected_file, _ = QtWidgets.QFileDialog.getOpenFileName(
         parent_widget,
         "Open Image",
         start_dir,
         IMAGE_FILE_FILTER,
     )
-    
+
     return selected_file if selected_file else None
+
+
 SI_PREFIXES = [
-    (1e9, 'G'),
-    (1e6, 'M'),
-    (1e3, 'k'),
-    (1.0, ''),
-    (1e-3, 'm'),
-    (1e-6, 'μ'),
-    (1e-9, 'n'),
-    (1e-12, 'p'),
-    (1e-15, 'f'),
+    (1e9, "G"),
+    (1e6, "M"),
+    (1e3, "k"),
+    (1.0, ""),
+    (1e-3, "m"),
+    (1e-6, "μ"),
+    (1e-9, "n"),
+    (1e-12, "p"),
+    (1e-15, "f"),
 ]
 
 
-def format_si_scale(value: float, base_unit: str = '', precision: int = 3) -> Tuple[float, str]:
+def format_si_scale(
+    value: float, base_unit: str = "", precision: int = 3
+) -> Tuple[float, str]:
     """
     Format a scale value into a nice SI unit.
-    
+
     Args:
         value: The value in base units
         base_unit: The base unit (e.g., 'm', 'Hz', 'Å')
         precision: Number of significant figures
-        
+
     Returns:
         (scaled_value, formatted_unit_string)
     """
     if value == 0 or not np.isfinite(value):
         return value, base_unit
-    
+
     abs_value = abs(value)
-    
+
     # Find appropriate SI prefix
     for factor, prefix in SI_PREFIXES:
-        if abs_value >= factor * 0.95:  # Use 0.95 threshold to avoid .999k instead of 1M
+        if (
+            abs_value >= factor * 0.95
+        ):  # Use 0.95 threshold to avoid .999k instead of 1M
             scaled = value / factor
             unit_str = f"{prefix}{base_unit}" if prefix else base_unit
             return scaled, unit_str
-    
+
     # If value is extremely small, use the smallest prefix
     factor, prefix = SI_PREFIXES[-1]
     scaled = value / factor
@@ -645,17 +664,17 @@ def format_si_scale(value: float, base_unit: str = '', precision: int = 3) -> Tu
 def format_reciprocal_scale(value: float, axis_unit: str = "m") -> Tuple[float, str]:
     """Format reciprocal-space values with denominator-style SI units.
 
-                Examples:
-                - values in 1/m are displayed as 1/nm when appropriate
-                - values in 1/nm can be displayed as 1/Å when appropriate
+    Examples:
+    - values in 1/m are displayed as 1/nm when appropriate
+    - values in 1/nm can be displayed as 1/Å when appropriate
 
-                Args:
-                    value: Input value for value.
-                    axis_unit: Input value for axis unit.
+    Args:
+        value: Input value for value.
+        axis_unit: Input value for axis unit.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     normalized_unit = unit_utils.normalize_axis_unit(axis_unit, default="m")
@@ -705,12 +724,12 @@ def format_reciprocal_scale(value: float, axis_unit: str = "m") -> Tuple[float, 
 def _get_hanning_window(shape: Tuple[int, int]) -> np.ndarray:
     """Get or create a cached Hanning window of specified shape.
 
-                Args:
-                    shape: Input value for shape.
+    Args:
+        shape: Input value for shape.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
     if shape not in _window_cache:
         window = np.hanning(shape[0])[:, None] * np.hanning(shape[1])[None, :]
@@ -718,21 +737,23 @@ def _get_hanning_window(shape: Tuple[int, int]) -> np.ndarray:
     return _window_cache[shape]
 
 
-def compute_fft(region: np.ndarray, scale_x: float, scale_y: float, apply_window: bool = True) -> Tuple[np.ndarray, float, float]:
+def compute_fft(
+    region: np.ndarray, scale_x: float, scale_y: float, apply_window: bool = True
+) -> Tuple[np.ndarray, float, float]:
     """
     Compute FFT of a 2D region and return magnitude spectrum with Nyquist frequencies.
-    
+
     Optimizations:
     - Caches Hanning windows to avoid recomputation
     - Pre-calculates Nyquist frequencies
     - Uses vectorized NumPy operations
-    
+
     Args:
         region: 2D numpy array
         scale_x: Physical scale along x-axis
         scale_y: Physical scale along y-axis
         apply_window: Whether to apply Hanning window before FFT
-        
+
     Returns:
         magnitude_spectrum: Log-scaled FFT magnitude
         nyq_x: Nyquist frequency in x
@@ -740,39 +761,39 @@ def compute_fft(region: np.ndarray, scale_x: float, scale_y: float, apply_window
     """
     if region is None or region.shape[0] < 2 or region.shape[1] < 2:
         return None, None, None
-    
+
     # Apply window if requested (use cached window)
     if apply_window:
         window = _get_hanning_window(region.shape)
         region = region * window
-    
+
     # Compute FFT with fftshift
     f = np.fft.fft2(region)
     fshift = np.fft.fftshift(f)
-    
+
     # Compute magnitude spectrum with log scaling
     magnitude_spectrum = 20 * np.log10(np.abs(fshift) + 1e-8)
-    
+
     # Pre-calculate Nyquist frequencies
     nyq_x = 0.5 / scale_x
     nyq_y = 0.5 / scale_y
-    
+
     return magnitude_spectrum, nyq_x, nyq_y
 
 
 def calculate_d_spacing(frequency: float, wavelength: float = 0.00251) -> float:
     """
     Calculate d-spacing from reciprocal space frequency.
-    
+
     Args:
         frequency: Frequency in reciprocal space
         wavelength: Electron wavelength in angstroms (default: ~100 keV)
-        
+
     Returns:
         d-spacing in angstroms
     """
     if frequency == 0:
-        return float('inf')
+        return float("inf")
     return 1.0 / frequency
 
 

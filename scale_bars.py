@@ -3,12 +3,12 @@
 # See LICENSE for full license terms.
 
 """Scale bar graphics items for image and FFT views."""
-from typing import Tuple
+
+from typing import Optional, Tuple
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
-from typing import Tuple, Optional
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 import utils
 
@@ -18,7 +18,7 @@ class ScaleBarItem(pg.GraphicsObject):
 
     def __init__(self, scale_per_pixel: float, units: str = "px"):
         """Initialize a microscopy-style scale bar.
-        
+
         Args:
             scale_per_pixel: Physical distance per pixel in base units.
             units: Unit label for the scale bar (default: "px").
@@ -69,7 +69,7 @@ class ScaleBarItem(pg.GraphicsObject):
 
     def boundingRect(self):  # type: ignore[override]
         """Return bounding rect of scale bar graphics item.
-        
+
         Returns:
             QRectF covering the scale bar and label text area.
         """
@@ -82,7 +82,7 @@ class ScaleBarItem(pg.GraphicsObject):
 
     def paint(self, p, *args):  # type: ignore[override]
         """Paint the scale bar with line and label text.
-        
+
         Args:
             p: QPainter to draw with.
         """  # pragma: no cover - pure UI
@@ -135,7 +135,7 @@ class DynamicScaleBar(pg.GraphicsObject):
         margin: int = 20,
     ):
         """Initialize a dynamic scale bar overlay.
-        
+
         Args:
             viewbox: The plot ViewBox to attach to.
             units: Base unit name for the scale bar (default: "m").
@@ -176,11 +176,11 @@ class DynamicScaleBar(pg.GraphicsObject):
     def set_extra_label(self, text: str | None) -> None:
         """Set an optional extra label drawn above the scale bar.
 
-                        Intended primarily for export (e.g., file name and ROI number).
+        Intended primarily for export (e.g., file name and ROI number).
 
-                        Args:
-                            text: User-facing text value for this operation.
-                    
+        Args:
+            text: User-facing text value for this operation.
+
         """
 
         # Normalize empty strings to None
@@ -191,9 +191,9 @@ class DynamicScaleBar(pg.GraphicsObject):
     def set_status_tag(self, text: str | None) -> None:
         """Set a persistent status tag appended to the scale-bar label.
 
-                        Args:
-                            text: User-facing text value for this operation.
-                    
+        Args:
+            text: User-facing text value for this operation.
+
         """
 
         clean = text.strip() if isinstance(text, str) else None
@@ -205,14 +205,14 @@ class DynamicScaleBar(pg.GraphicsObject):
     ) -> Tuple[float, float]:
         """Return (length_val, length_px) using 2/5/10 × 10^n close to target.
 
-                        Args:
-                            target_val: Input value for target val.
-                            world_per_px: Input value for world per px.
-                            width_px: Input value for width px.
+        Args:
+            target_val: Input value for target val.
+            world_per_px: Input value for world per px.
+            width_px: Input value for width px.
 
-                        Returns:
-                            Detailed parameter description.
-                    
+        Returns:
+            Detailed parameter description.
+
         """
 
         if target_val <= 0 or not np.isfinite(target_val):
@@ -229,7 +229,7 @@ class DynamicScaleBar(pg.GraphicsObject):
 
         for e in range(exp0 - 6, exp0 + 7):
             for factor in (2.0, 5.0, 10.0):
-                val = factor * (10.0 ** e)
+                val = factor * (10.0**e)
                 if val <= 0 or not np.isfinite(val):
                     continue
 
@@ -255,12 +255,12 @@ class DynamicScaleBar(pg.GraphicsObject):
     def _update_geometry(self, *args):  # pragma: no cover - pure UI
         """Update scale bar geometry for current view range and size.
 
-                        Called when the view is resized or panned. Recalculates the bar length
-                        and label based on the current physical coordinates and view dimensions.
+        Called when the view is resized or panned. Recalculates the bar length
+        and label based on the current physical coordinates and view dimensions.
 
-                        Args:
-                            *args: Input value for args.
-                    
+        Args:
+            *args: Input value for args.
+
         """
         width_px = max(float(self.vb.width()), 1.0)
 

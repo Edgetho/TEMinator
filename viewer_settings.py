@@ -32,16 +32,16 @@ _EFFECTIVE_RENDER_SETTINGS: RenderSettings | None = None
 def _settings_store() -> QtCore.QSettings:
     """Get the application's QSettings store for persisting render preferences.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
     return QtCore.QSettings("TEMinator", "TEMinator")
 
 
 def load_render_settings() -> RenderSettings:
     """Load render settings from persistent storage (QSettings).
-    
+
     Returns:
         RenderSettings dict with hardware acceleration and resampling quality settings.
     """
@@ -56,13 +56,17 @@ def load_render_settings() -> RenderSettings:
     else:
         use_hardware = bool(raw_hw)
 
-    quality = str(
-        store.value(
-            "render/image_resampling_quality",
-            DEFAULT_RENDER_SETTINGS["image_resampling_quality"],
+    quality = (
+        str(
+            store.value(
+                "render/image_resampling_quality",
+                DEFAULT_RENDER_SETTINGS["image_resampling_quality"],
+            )
+            or DEFAULT_RENDER_SETTINGS["image_resampling_quality"]
         )
-        or DEFAULT_RENDER_SETTINGS["image_resampling_quality"]
-    ).strip().lower()
+        .strip()
+        .lower()
+    )
     if quality not in RESAMPLING_CHOICES:
         quality = DEFAULT_RENDER_SETTINGS["image_resampling_quality"]
 
@@ -74,7 +78,7 @@ def load_render_settings() -> RenderSettings:
 
 def save_render_settings(settings: RenderSettings) -> None:
     """Save render settings to persistent storage (QSettings).
-    
+
     Args:
         settings: RenderSettings dict to persist with validated values.
     """
@@ -92,10 +96,10 @@ def save_render_settings(settings: RenderSettings) -> None:
 
 def hardware_acceleration_available(*, force_refresh: bool = False) -> bool:
     """Check if OpenGL hardware acceleration is available on this system.
-    
+
     Args:
         force_refresh: If True, re-test availability instead of using cached result.
-        
+
     Returns:
         True if OpenGL context can be created, False if unavailable or error occurs.
     """
@@ -136,11 +140,11 @@ def global_render_config_options(
     hardware_available: bool | None = None,
 ) -> dict[str, object]:
     """Generate pyqtgraph configuration options from render settings.
-    
+
     Args:
         settings: RenderSettings with user preferences.
         hardware_available: If provided, use instead of auto-detecting.
-        
+
     Returns:
         Dict of options to pass to pyqtgraph.setConfigOptions().
     """
@@ -159,12 +163,12 @@ def global_render_config_options(
 def set_effective_render_settings(settings: RenderSettings) -> None:
     """Cache the effective render settings for the current session.
 
-                This is called from app.py after applying CLI overrides to ensure that
-                render diagnostics and ImageViewer windows show the correct settings.
+    This is called from app.py after applying CLI overrides to ensure that
+    render diagnostics and ImageViewer windows show the correct settings.
 
-                Args:
-                    settings: Render settings mapping to persist or apply.
-            
+    Args:
+        settings: Render settings mapping to persist or apply.
+
     """
     global _EFFECTIVE_RENDER_SETTINGS
     _EFFECTIVE_RENDER_SETTINGS = {
@@ -176,11 +180,11 @@ def set_effective_render_settings(settings: RenderSettings) -> None:
 def get_effective_render_settings() -> RenderSettings:
     """Get the effective render settings for the current session.
 
-                Returns cached effective settings if set by app.py, otherwise loads from storage.
+    Returns cached effective settings if set by app.py, otherwise loads from storage.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
     global _EFFECTIVE_RENDER_SETTINGS
     if _EFFECTIVE_RENDER_SETTINGS is not None:

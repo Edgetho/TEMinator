@@ -9,20 +9,19 @@ from __future__ import annotations
 import re
 from typing import Optional, Tuple
 
-
 _UNDEFINED_UNIT_TOKENS = {"", "<undefined>", "undefined", "none", "null"}
 
 
 def normalize_axis_unit(unit_text: str | None, default: str = "nm") -> str:
     """Normalize user/axis unit text and apply a sane default when unset.
 
-                Args:
-                    unit_text: Input value for unit text.
-                    default: Input value for default.
+    Args:
+        unit_text: Input value for unit text.
+        default: Input value for default.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     if unit_text is None:
@@ -40,12 +39,12 @@ def normalize_axis_unit(unit_text: str | None, default: str = "nm") -> str:
 def reciprocal_denominator(unit_text: str | None) -> Optional[str]:
     """Return denominator unit for reciprocal forms like '1/nm' or 'nm^-1'.
 
-                Args:
-                    unit_text: Input value for unit text.
+    Args:
+        unit_text: Input value for unit text.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     unit = normalize_axis_unit(unit_text, default="")
@@ -66,12 +65,12 @@ def reciprocal_denominator(unit_text: str | None) -> Optional[str]:
 def is_reciprocal_unit(unit_text: str | None) -> bool:
     """Return True when a unit string is explicitly reciprocal.
 
-                Args:
-                    unit_text: Input value for unit text.
+    Args:
+        unit_text: Input value for unit text.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     return reciprocal_denominator(unit_text) is not None
@@ -80,12 +79,12 @@ def is_reciprocal_unit(unit_text: str | None) -> bool:
 def unit_kind(unit_text: str | None) -> Optional[str]:
     """Return 'linear', 'reciprocal', or None for missing unit text.
 
-                Args:
-                    unit_text: Input value for unit text.
+    Args:
+        unit_text: Input value for unit text.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     unit = normalize_axis_unit(unit_text, default="")
@@ -97,15 +96,15 @@ def unit_kind(unit_text: str | None) -> Optional[str]:
 def split_value_and_unit(text: str) -> Optional[Tuple[float, Optional[str]]]:
     """Parse strings like '10', '10nm', '10 nm', or '2 nm-1'.
 
-                Reciprocal units in user input must use suffix notation, e.g. ``nm-1``.
-                Slash notation such as ``1/nm`` is intentionally rejected for input.
+    Reciprocal units in user input must use suffix notation, e.g. ``nm-1``.
+    Slash notation such as ``1/nm`` is intentionally rejected for input.
 
-                Args:
-                    text: User-facing text value for this operation.
+    Args:
+        text: User-facing text value for this operation.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     raw = (text or "").strip()
@@ -140,15 +139,17 @@ def split_value_and_unit(text: str) -> Optional[Tuple[float, Optional[str]]]:
 def _linear_unit_to_meter_factor(unit_text: str | None) -> Optional[float]:
     """Return multiplicative factor to convert a linear unit to meters.
 
-                Args:
-                    unit_text: Input value for unit text.
+    Args:
+        unit_text: Input value for unit text.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
-    unit = normalize_axis_unit(unit_text, default="").replace("μ", "u").replace("Å", "A")
+    unit = (
+        normalize_axis_unit(unit_text, default="").replace("μ", "u").replace("Å", "A")
+    )
     if not unit:
         return None
 
@@ -175,17 +176,19 @@ def _linear_unit_to_meter_factor(unit_text: str | None) -> Optional[float]:
     return None
 
 
-def convert_distance_value(value: float, source_unit: str, target_unit: str) -> Optional[float]:
+def convert_distance_value(
+    value: float, source_unit: str, target_unit: str
+) -> Optional[float]:
     """Convert a distance value between compatible linear or reciprocal units.
 
-                Args:
-                    value: Input value for value.
-                    source_unit: Input value for source unit.
-                    target_unit: Input value for target unit.
+    Args:
+        value: Input value for value.
+        source_unit: Input value for source unit.
+        target_unit: Input value for target unit.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     source = normalize_axis_unit(source_unit, default="")
@@ -223,13 +226,13 @@ def parse_distance_to_target_units(
 ) -> Optional[Tuple[float, Optional[str]]]:
     """Parse and convert a typed distance expression to target units.
 
-                Args:
-                    distance_text: Input value for distance text.
-                    target_unit: Input value for target unit.
+    Args:
+        distance_text: Input value for distance text.
+        target_unit: Input value for target unit.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     parsed = split_value_and_unit(distance_text)
@@ -247,16 +250,18 @@ def parse_distance_to_target_units(
     return converted, explicit_unit
 
 
-def scale_bar_unit_and_mode(axis_unit: str | None, reciprocal_hint: bool) -> Tuple[str, bool]:
+def scale_bar_unit_and_mode(
+    axis_unit: str | None, reciprocal_hint: bool
+) -> Tuple[str, bool]:
     """Return (display_base_unit, reciprocal_mode) for DynamicScaleBar.
 
-                Args:
-                    axis_unit: Input value for axis unit.
-                    reciprocal_hint: Input value for reciprocal hint.
+    Args:
+        axis_unit: Input value for axis unit.
+        reciprocal_hint: Input value for reciprocal hint.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     normalized = normalize_axis_unit(axis_unit, default="nm")

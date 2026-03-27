@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Callable, Optional, List, Any, Mapping, Literal
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional
 
-from pyqtgraph.Qt import QtWidgets, QtGui
+from pyqtgraph.Qt import QtGui, QtWidgets
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ MenuRole = Literal["main", "viewer"]
 @dataclass
 class MenuItemConfig:
     """Configuration for a single menu item.
-    
+
     Attributes:
         title: Display name of the menu item
         shortcut: Keyboard shortcut (e.g., "Ctrl+O"), empty string for none
@@ -31,6 +31,7 @@ class MenuItemConfig:
                        Can be a boolean or a callable that takes (image_available) and returns bool
         menu_path: Menu path like "File" or "Display"
     """
+
     title: str
     shortcut: str
     callback: Callable
@@ -42,9 +43,13 @@ class MenuItemConfig:
 class MenuBuilder:
     """Builder class for creating menus with consistent handling of shortcuts and state."""
 
-    def __init__(self, parent: QtWidgets.QMainWindow, logger_instance: logging.Logger | None = None):
+    def __init__(
+        self,
+        parent: QtWidgets.QMainWindow,
+        logger_instance: logging.Logger | None = None,
+    ):
         """Initialize the menu builder.
-        
+
         Args:
             parent: The QMainWindow to attach menus to
             logger_instance: Optional logger instance for debug messages
@@ -70,28 +75,28 @@ class MenuBuilder:
         is_enabled: bool = True,
     ) -> QtWidgets.QAction:
         """Add a menu action with optional keyboard shortcut.
-        
+
         Args:
             menu: The QMenu to add the action to
             title: The text label for the menu item
             callback: The function to call when the action is triggered
             shortcut: Optional keyboard shortcut string (e.g., "Ctrl+O")
             is_enabled: Whether the action should be enabled
-            
+
         Returns:
             The created QAction
         """
         action = menu.addAction(title, callback)
         action.setEnabled(is_enabled)
-        
+
         if shortcut:
             action.setShortcut(QtGui.QKeySequence(shortcut))
             self.logger.debug(f"Menu item '{title}' assigned shortcut: {shortcut}")
-        
+
         # Store action with a unique key for later reference
         key = f"{menu.title()}::{title}"
         self.actions[key] = action
-        
+
         return action
 
     def build_from_config(
@@ -100,44 +105,43 @@ class MenuBuilder:
         image_available: bool = False,
     ) -> Dict[str, QtWidgets.QAction]:
         """Build menus from a list of MenuItemConfigs.
-        
+
         This method:
         1. Groups items by menu_path
         2. Creates menu structure
         3. Adds items with proper enabled/disabled state based on:
            - Whether the item is implemented
            - Whether an image is available (if required)
-        
+
         Args:
             config: List of MenuItemConfig items
             image_available: Whether an active image is available
-            
+
         Returns:
             Dictionary of all created actions, keyed by menu path and title
         """
         self.clear()
-        
+
         # Group items by menu
         menu_items: Dict[str, List[MenuItemConfig]] = {}
         for item in config:
             if item.menu_path not in menu_items:
                 menu_items[item.menu_path] = []
             menu_items[item.menu_path].append(item)
-        
+
         # Create menus and add items
         created_actions: Dict[str, QtWidgets.QAction] = {}
-        
+
         for menu_name, items in menu_items.items():
             menu = self.menu_bar.addMenu(menu_name)
             self.menus[menu_name] = menu
-            
+
             for item in items:
                 # Determine if item should be enabled
-                is_enabled = (
-                    item.is_implemented and 
-                    (not item.requires_image or image_available)
+                is_enabled = item.is_implemented and (
+                    not item.requires_image or image_available
                 )
-                
+
                 action = self.add_menu_item(
                     menu,
                     item.title,
@@ -145,13 +149,17 @@ class MenuBuilder:
                     shortcut=item.shortcut,
                     is_enabled=is_enabled,
                 )
-                
+
                 created_actions[f"{menu_name}::{item.title}"] = action
-                
+
                 if not is_enabled:
-                    reason = "not implemented" if not item.is_implemented else "requires active image"
+                    reason = (
+                        "not implemented"
+                        if not item.is_implemented
+                        else "requires active image"
+                    )
                     self.logger.debug(f"Disabled menu item '{item.title}' ({reason})")
-        
+
         return created_actions
 
     def set_action_enabled(
@@ -161,12 +169,12 @@ class MenuBuilder:
         enabled: bool,
     ) -> bool:
         """Enable or disable a specific menu action.
-        
+
         Args:
             menu_name: The menu name (e.g., "File", "Edit")
             item_title: The menu item title
             enabled: Whether to enable or disable
-            
+
         Returns:
             True if the action was found and updated, False otherwise
         """
@@ -179,14 +187,14 @@ class MenuBuilder:
 
 def create_shared_menu_config() -> List[MenuItemConfig]:
     """Create the comprehensive menu configuration for TEMinator.
-    
+
     This configuration includes all menu items from both main_window and image_viewer.
     Items are marked with flags to indicate:
     - Whether they're fully implemented
     - Whether they require an active image
-    
+
     Windows will use the appropriate subset and state for their context.
-    
+
     Returns:
         List of MenuItemConfig items for all standard menus
     """
@@ -383,5 +391,3 @@ def build_menu_config_for_role(
             item.callback = not_implemented_factory(item.title)
 
     return config
-
-

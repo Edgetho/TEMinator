@@ -255,7 +255,9 @@ def resolve_profile_axis_unit(
         Normalized unit string used for downstream distance labeling.
     """
     if view_mode == "fft":
-        axis_unit, _ = unit_utils.scale_bar_unit_and_mode(freq_axis_base_unit, reciprocal_hint=True)
+        axis_unit, _ = unit_utils.scale_bar_unit_and_mode(
+            freq_axis_base_unit, reciprocal_hint=True
+        )
         return axis_unit
 
     return unit_utils.normalize_axis_unit(axis_units, default="")
@@ -316,14 +318,24 @@ def scaled_distance_axis(
     """
     reference_distance = float(distances_world[-1]) if distances_world.size else 0.0
     if reference_distance <= 0 or not np.isfinite(reference_distance):
-        return distances_world, f"Distance ({axis_unit})", None, reference_distance, None
+        return (
+            distances_world,
+            f"Distance ({axis_unit})",
+            None,
+            reference_distance,
+            None,
+        )
 
     if view_mode == "fft" or is_reciprocal_space:
-        scaled_ref, display_unit = format_reciprocal_scale(reference_distance, axis_unit)
+        scaled_ref, display_unit = format_reciprocal_scale(
+            reference_distance, axis_unit
+        )
     else:
         scaled_ref, display_unit = format_si_scale(reference_distance, axis_unit)
 
-    scale_factor = float(scaled_ref) / reference_distance if reference_distance != 0 else 1.0
+    scale_factor = (
+        float(scaled_ref) / reference_distance if reference_distance != 0 else 1.0
+    )
     return (
         distances_world * scale_factor,
         f"Distance ({display_unit})",

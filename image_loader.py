@@ -12,16 +12,15 @@ import hyperspy.api as hs
 import numpy as np
 from pyqtgraph.Qt import QtWidgets
 
-
 logger = logging.getLogger(__name__)
 
 
 def open_image_file(file_path: str) -> None:
     """Open an image file; if it contains multiple images, open one window per image.
 
-                Args:
-                    file_path: Path to the target file on disk.
-            
+    Args:
+        file_path: Path to the target file on disk.
+
     """
 
     try:
@@ -36,9 +35,13 @@ def open_image_file(file_path: str) -> None:
         for sig_index, signal in enumerate(signals):
             if signal.axes_manager.navigation_dimension == 0:
                 suffix = f"[{sig_index}]" if len(signals) > 1 else None
-                window = ImageViewerWindow(file_path, signal=signal, window_suffix=suffix)
+                window = ImageViewerWindow(
+                    file_path, signal=signal, window_suffix=suffix
+                )
                 window.show()
-                logger.debug("Opened viewer for signal index %s suffix=%s", sig_index, suffix)
+                logger.debug(
+                    "Opened viewer for signal index %s suffix=%s", sig_index, suffix
+                )
             else:
                 nav_shape = signal.axes_manager.navigation_shape
                 for nav_index in np.ndindex(nav_shape):
@@ -63,4 +66,6 @@ def open_image_file(file_path: str) -> None:
 
     except Exception as exc:
         logger.exception("Could not open file: %s", file_path)
-        QtWidgets.QMessageBox.critical(None, "Error", f"Could not open file: {str(exc)}")
+        QtWidgets.QMessageBox.critical(
+            None, "Error", f"Could not open file: {str(exc)}"
+        )

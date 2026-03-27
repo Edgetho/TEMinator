@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from command_utils import CommandModeController
 from dialogs import DirectoryFuzzyOpenDialog, RenderSettingsDialog
@@ -22,14 +22,14 @@ from main_window_commands import MainWindowCommandRouter
 from menu_manager import MenuBuilder, build_menu_config_for_role
 from utils import (
     HelpDialogActions,
-    open_parameters_dialog,
     open_file_dialog,
+    open_parameters_dialog,
 )
 from viewer_settings import (
-    load_render_settings,
-    save_render_settings,
     global_render_config_options,
     hardware_acceleration_available,
+    load_render_settings,
+    save_render_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.help_actions = HelpDialogActions(
             parent_widget=self,
-            menu_config_provider=lambda: build_menu_config_for_role(role="main", callbacks_map={}),
+            menu_config_provider=lambda: build_menu_config_for_role(
+                role="main", callbacks_map={}
+            ),
             extra_shortcuts_provider=lambda: {
                 "Enter command mode": ":",
                 "Exit command mode": "Esc",
@@ -113,12 +115,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _setup_menu_bar(self) -> None:
         """Configure the application menu bar with all actions and commands."""
+
         def not_implemented(feature_name: str):
             """Create a callback for an unimplemented feature action.
-            
+
             Args:
                 feature_name: Display name of the feature.
-                
+
             Returns:
                 A callable that shows the not-implemented dialog when invoked.
             """
@@ -127,26 +130,25 @@ class MainWindow(QtWidgets.QMainWindow):
         config = build_menu_config_for_role(
             role="main",
             callbacks_map={
-            "Open": self._open_file_dialog,
-            "Parameters": self._open_parameters_dialog,
-            "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
-            "About": self.help_actions.show_about,
-            "README": self.help_actions.show_readme,
+                "Open": self._open_file_dialog,
+                "Parameters": self._open_parameters_dialog,
+                "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
+                "About": self.help_actions.show_about,
+                "README": self.help_actions.show_readme,
             },
             not_implemented_factory=not_implemented,
         )
-        
+
         # Build menus using the builder - no image is available in main window
         # The MenuBuilder will automatically grey out items that require_image
         self.menu_builder = MenuBuilder(self, logger)
         self.menu_builder.build_from_config(config, image_available=False)
-        
-        logger.debug("Main window menu bar setup complete with keyboard shortcuts")
 
+        logger.debug("Main window menu bar setup complete with keyboard shortcuts")
 
     def _show_not_implemented(self, feature_name: str) -> None:
         """Display a dialog indicating that a feature is not yet implemented.
-        
+
         Args:
             feature_name: Name of the feature that is not implemented.
         """
@@ -158,12 +160,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _render_status_text(self) -> str:
         """Generate the status bar text displaying render settings and hardware info.
-        
+
         Returns:
             Formatted string showing hardware acceleration and resampling quality.
         """
-        quality = str(self._render_settings.get("image_resampling_quality", "high")).strip().lower()
-        requested_hw = bool(self._render_settings.get("use_hardware_acceleration", True))
+        quality = (
+            str(self._render_settings.get("image_resampling_quality", "high"))
+            .strip()
+            .lower()
+        )
+        requested_hw = bool(
+            self._render_settings.get("use_hardware_acceleration", True)
+        )
         available_hw = hardware_acceleration_available()
 
         if requested_hw and available_hw:
@@ -203,9 +211,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def dragEnterEvent(self, event):  # type: ignore[override]
         """Accept drag events for image files dropped onto the window.
 
-                        Args:
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            event: Qt event object carrying user interaction details.
+
         """
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -213,9 +221,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def dropEvent(self, event):  # type: ignore[override]
         """Handle dropped files by opening them as images.
 
-                        Args:
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            event: Qt event object carrying user interaction details.
+
         """
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
@@ -224,7 +232,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_image(self, file_path: str) -> None:
         """Load and display an image file.
-        
+
         Args:
             file_path: Path to the image file to open.
         """
@@ -235,10 +243,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def eventFilter(self, obj, event):  # type: ignore[override]
         """Handle keyboard shortcuts including vim-style command mode (colon key).
 
-                        Args:
-                            obj: Input value for obj.
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            obj: Input value for obj.
+            event: Qt event object carrying user interaction details.
+
         """
         if self._command_mode.handle_key_event(self.isActiveWindow(), event):
             return True

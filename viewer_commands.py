@@ -19,6 +19,7 @@ from types_common import LoggerLike
 
 class _ImageViewerCommandsOwner(Protocol):
     """Protocol for image viewer windows managed by ViewerCommandRouter."""
+
     file_path: str
     btn_measure: QtWidgets.QPushButton | None
     fft_manager: Any
@@ -34,7 +35,7 @@ class ViewerCommandRouter:
 
     def __init__(self, viewer: _ImageViewerCommandsOwner, logger: LoggerLike):
         """Initialize the command router for an image viewer window.
-        
+
         Args:
             viewer: The image viewer window that will execute commands.
             logger: A logger instance for debug output.
@@ -45,9 +46,9 @@ class ViewerCommandRouter:
     def open_file_by_name(self, filename: str) -> None:
         """Open an image relative to this viewer's current file directory.
 
-                        Args:
-                            filename: Input value for filename.
-                    
+        Args:
+            filename: Input value for filename.
+
         """
 
         viewer = self.viewer
@@ -80,13 +81,13 @@ class ViewerCommandRouter:
     def run_vim_command(self, cmd: str, arg: str) -> bool:
         """Dispatch image-viewer vim-like commands.
 
-                        Args:
-                            cmd: Parsed command name to execute.
-                            arg: Optional command argument value.
+        Args:
+            cmd: Parsed command name to execute.
+            arg: Optional command argument value.
 
-                        Returns:
-                            Detailed parameter description.
-                    
+        Returns:
+            Detailed parameter description.
+
         """
 
         viewer = self.viewer

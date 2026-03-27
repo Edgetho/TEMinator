@@ -11,7 +11,6 @@ from typing import Callable, Optional, Type
 
 from pyqtgraph.Qt import QtWidgets
 
-
 IMAGE_EXTENSIONS = (
     ".dm3",
     ".dm4",
@@ -31,13 +30,13 @@ IMAGE_FILE_FILTER = "Image files (*.dm3 *.dm4 *.emi *.tif *.tiff *.mrc *.ser *.p
 def resolve_image_path(filename: str, base_directory: Path) -> Optional[Path]:
     """Resolve a user-provided image filename against a base directory.
 
-                Args:
-                    filename: Input value for filename.
-                    base_directory: Input value for base directory.
+    Args:
+        filename: Input value for filename.
+        base_directory: Input value for base directory.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     name = (filename or "").strip().strip('"').strip("'")
@@ -59,15 +58,15 @@ def open_image_by_name(
 ) -> bool:
     """Resolve and open an image filename, displaying user-facing errors.
 
-                Args:
-                    parent: Optional parent widget or owning object.
-                    filename: Input value for filename.
-                    base_directory: Input value for base directory.
-                    open_callback: Input value for open callback.
+    Args:
+        parent: Optional parent widget or owning object.
+        filename: Input value for filename.
+        base_directory: Input value for base directory.
+        open_callback: Input value for open callback.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     path = resolve_image_path(filename, base_directory)
@@ -89,14 +88,14 @@ def open_directory_fuzzy_dialog(
 ) -> bool:
     """Open a directory-backed fuzzy-open dialog with validation.
 
-                Args:
-                    parent: Optional parent widget or owning object.
-                    directory: Input value for directory.
-                    dialog_cls: Input value for dialog cls.
+    Args:
+        parent: Optional parent widget or owning object.
+        directory: Input value for directory.
+        dialog_cls: Input value for dialog cls.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     if not directory.is_dir():

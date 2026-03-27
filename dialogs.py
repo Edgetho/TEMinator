@@ -3,27 +3,25 @@
 # See LICENSE for full license terms.
 
 """Dialog and auxiliary windows (history, metadata, tone curve)."""
+
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
-from typing import List
-from typing import Optional
-from typing import Any
+from typing import Any, List, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtWidgets, QtCore, QtGui
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from file_navigation import IMAGE_EXTENSIONS
 from viewer_settings import (
-    RESAMPLING_FAST,
     RESAMPLING_BALANCED,
+    RESAMPLING_FAST,
     RESAMPLING_HIGH,
     RenderSettings,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +54,13 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         self._suppress_item_changed = False
         self._editing_item = False
 
-        rename_shortcut_return = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Return), self)
+        rename_shortcut_return = QtGui.QShortcut(
+            QtGui.QKeySequence(QtCore.Qt.Key_Return), self
+        )
         rename_shortcut_return.activated.connect(self._begin_inline_rename_selected)
-        rename_shortcut_enter = QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Enter), self)
+        rename_shortcut_enter = QtGui.QShortcut(
+            QtGui.QKeySequence(QtCore.Qt.Key_Enter), self
+        )
         rename_shortcut_enter.activated.connect(self._begin_inline_rename_selected)
 
         btn_layout = QtWidgets.QHBoxLayout()
@@ -119,10 +121,10 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
     ):
         """Add a measurement to the history.
 
-            Args:
-                measurement_text: Rendered measurement label text shown in history.
-                measurement_id: Numeric identifier for the measurement history entry.
-                measurement_type: Measurement category, typically distance or profile.
+        Args:
+            measurement_text: Rendered measurement label text shown in history.
+            measurement_id: Numeric identifier for the measurement history entry.
+            measurement_type: Measurement category, typically distance or profile.
         """
         item = QtWidgets.QListWidgetItem(measurement_text)
         metadata = {
@@ -148,9 +150,9 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
     def clear_all(self, _checked: bool = False, *, notify_parent: bool = True):
         """Clear all measurements.
 
-            Args:
-                _checked: Unused checkbox/button state from Qt signal signatures.
-                notify_parent: If True, propagates clear actions to the parent measurement controller.
+        Args:
+            _checked: Unused checkbox/button state from Qt signal signatures.
+            notify_parent: If True, propagates clear actions to the parent measurement controller.
         """
         logger.debug(
             "MeasurementHistory clear all requested: count=%s notify_parent=%s",
@@ -163,9 +165,13 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         if notify_parent:
             parent = self.parent()
             measurements = self._measurement_controller()
-            if measurements is not None and hasattr(measurements, "clear_measurements_from_history"):
+            if measurements is not None and hasattr(
+                measurements, "clear_measurements_from_history"
+            ):
                 measurements.clear_measurements_from_history()
-            elif parent is not None and hasattr(parent, "clear_measurements_from_history"):
+            elif parent is not None and hasattr(
+                parent, "clear_measurements_from_history"
+            ):
                 parent.clear_measurements_from_history()
         logger.debug("MeasurementHistory cleared")
 
@@ -174,7 +180,9 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         item, metadata, row = self._selected_item_with_metadata()
         if item is None or metadata is None or row < 0:
             logger.debug("MeasurementHistory delete selected ignored: no row selected")
-            QtWidgets.QMessageBox.information(self, "Delete", "No measurement selected.")
+            QtWidgets.QMessageBox.information(
+                self, "Delete", "No measurement selected."
+            )
             return
 
         item = self.list_widget.takeItem(row)
@@ -198,9 +206,17 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
 
         parent = self.parent()
         measurements = self._measurement_controller()
-        if measurements is not None and entry_id is not None and hasattr(measurements, "delete_measurement_by_history_id"):
-            measurements.delete_measurement_by_history_id(int(entry_id), str(entry_type))
-        elif measurements is not None and hasattr(measurements, "delete_measurement_by_label"):
+        if (
+            measurements is not None
+            and entry_id is not None
+            and hasattr(measurements, "delete_measurement_by_history_id")
+        ):
+            measurements.delete_measurement_by_history_id(
+                int(entry_id), str(entry_type)
+            )
+        elif measurements is not None and hasattr(
+            measurements, "delete_measurement_by_label"
+        ):
             measurements.delete_measurement_by_label(text)
         elif (
             parent is not None
@@ -210,7 +226,10 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
             parent.delete_measurement_by_history_id(int(entry_id), str(entry_type))
         elif parent is not None and hasattr(parent, "delete_measurement_by_label"):
             parent.delete_measurement_by_label(text)
-        logger.debug("MeasurementHistory delete selected complete: remaining=%s", len(self.measurements))
+        logger.debug(
+            "MeasurementHistory delete selected complete: remaining=%s",
+            len(self.measurements),
+        )
 
     def _begin_inline_rename_selected(self):
         """Start inline editing of selected history entry text."""
@@ -220,7 +239,9 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         item, metadata, row = self._selected_item_with_metadata()
         if item is None or metadata is None or row < 0:
             logger.debug("MeasurementHistory inline rename ignored: no row selected")
-            QtWidgets.QMessageBox.information(self, "Rename", "No measurement selected.")
+            QtWidgets.QMessageBox.information(
+                self, "Rename", "No measurement selected."
+            )
             return
 
         self._editing_item = True
@@ -263,8 +284,14 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
 
         parent = self.parent()
         measurements = self._measurement_controller()
-        if measurements is not None and entry_id is not None and hasattr(measurements, "rename_measurement_by_history_id"):
-            measurements.rename_measurement_by_history_id(int(entry_id), entry_type, new_text)
+        if (
+            measurements is not None
+            and entry_id is not None
+            and hasattr(measurements, "rename_measurement_by_history_id")
+        ):
+            measurements.rename_measurement_by_history_id(
+                int(entry_id), entry_type, new_text
+            )
         elif (
             parent is not None
             and hasattr(parent, "rename_measurement_by_history_id")
@@ -294,8 +321,8 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
     def _open_selected_measurement(self, item: QtWidgets.QListWidgetItem):
         """Re-open or focus a measurement target (currently profile windows).
 
-            Args:
-                item: Selected list item carrying measurement metadata and display text.
+        Args:
+            item: Selected list item carrying measurement metadata and display text.
         """
         metadata = item.data(QtCore.Qt.UserRole)
         if not isinstance(metadata, dict):
@@ -310,11 +337,17 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
 
         parent = self.parent()
         measurements = self._measurement_controller()
-        if measurements is not None and hasattr(measurements, "open_measurement_by_history_id"):
-            logger.debug("MeasurementHistory open requested: id=%s type=%s", entry_id, entry_type)
+        if measurements is not None and hasattr(
+            measurements, "open_measurement_by_history_id"
+        ):
+            logger.debug(
+                "MeasurementHistory open requested: id=%s type=%s", entry_id, entry_type
+            )
             measurements.open_measurement_by_history_id(int(entry_id), entry_type)
         elif parent is not None and hasattr(parent, "open_measurement_by_history_id"):
-            logger.debug("MeasurementHistory open requested: id=%s type=%s", entry_id, entry_type)
+            logger.debug(
+                "MeasurementHistory open requested: id=%s type=%s", entry_id, entry_type
+            )
             parent.open_measurement_by_history_id(int(entry_id), entry_type)
 
     def copy_selected(self):
@@ -344,12 +377,20 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
                     f.write("Measurement\n")
                     for measurement in self.measurements:
                         f.write(f"{measurement.get('text', '')}\n")
-                logger.debug("MeasurementHistory exported CSV: path=%s count=%s", file_path, len(self.measurements))
+                logger.debug(
+                    "MeasurementHistory exported CSV: path=%s count=%s",
+                    file_path,
+                    len(self.measurements),
+                )
                 QtWidgets.QMessageBox.information(
                     self, "Success", f"Exported to {file_path}"
                 )
             except Exception as e:  # pragma: no cover - I/O error path
-                logger.debug("MeasurementHistory export failed: path=%s error=%s", file_path, str(e))
+                logger.debug(
+                    "MeasurementHistory export failed: path=%s error=%s",
+                    file_path,
+                    str(e),
+                )
                 QtWidgets.QMessageBox.critical(
                     self, "Error", f"Could not export: {str(e)}"
                 )
@@ -470,9 +511,9 @@ class MetadataWindow(QtWidgets.QMainWindow):
     ) -> None:
         """Update displayed metadata for both tabs.
 
-            Args:
-                raw_metadata: Reader-level metadata dictionary from the original image file.
-                cleaned_metadata: HyperSpy-normalized metadata dictionary for display.
+        Args:
+            raw_metadata: Reader-level metadata dictionary from the original image file.
+            cleaned_metadata: HyperSpy-normalized metadata dictionary for display.
         """
 
         raw_text = self._format_metadata(
@@ -898,7 +939,8 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
             self._all_files = sorted(
                 f.name
                 for f in self.directory.iterdir()
-                if f.is_file() and (not IMAGE_EXTENSIONS or f.suffix.lower() in IMAGE_EXTENSIONS)
+                if f.is_file()
+                and (not IMAGE_EXTENSIONS or f.suffix.lower() in IMAGE_EXTENSIONS)
             )
         except Exception:
             self._all_files = []
@@ -908,8 +950,8 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
     def _update_list(self, names: List[str]) -> None:
         """Replace list widget contents with provided file names.
 
-            Args:
-                names: Candidate file names to display in the fuzzy-open list.
+        Args:
+            names: Candidate file names to display in the fuzzy-open list.
         """
         self.list_widget.clear()
         self.list_widget.addItems(names)
@@ -918,12 +960,12 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
     def _fuzzy_match(pattern: str, text: str) -> bool:
         """Simple subsequence-based fuzzy matching.
 
-            Args:
-                pattern: Lowercased user search pattern used for subsequence matching.
-                text: Current text value from editable UI controls.
+        Args:
+            pattern: Lowercased user search pattern used for subsequence matching.
+            text: Current text value from editable UI controls.
 
-            Returns:
-                True when the pattern characters appear in order within the file name.
+        Returns:
+            True when the pattern characters appear in order within the file name.
         """
 
         it = iter(text)
@@ -932,9 +974,9 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
     def _on_filter_changed(self, text: str) -> None:
         """Apply fuzzy filtering as the user types in the filter field.
 
-                        Args:
-                            text: User-facing text value for this operation.
-                    
+        Args:
+            text: User-facing text value for this operation.
+
         """
         pattern = text.strip().lower()
         if not pattern:
@@ -944,9 +986,7 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
             return
 
         matches = [
-            name
-            for name in self._all_files
-            if self._fuzzy_match(pattern, name.lower())
+            name for name in self._all_files if self._fuzzy_match(pattern, name.lower())
         ]
         self._update_list(matches)
         if matches:
@@ -963,16 +1003,16 @@ class DirectoryFuzzyOpenDialog(QtWidgets.QDialog):
     def _on_item_activated(self, item: QtWidgets.QListWidgetItem) -> None:  # type: ignore[override]
         """Open file when a list item is activated.
 
-            Args:
-                item: Selected list item carrying measurement metadata and display text.
+        Args:
+            item: Selected list item carrying measurement metadata and display text.
         """
         self._open_item(item)
 
     def _open_item(self, item: QtWidgets.QListWidgetItem) -> None:
         """Open selected file in the image loader and close the dialog.
 
-            Args:
-                item: Selected list item carrying measurement metadata and display text.
+        Args:
+            item: Selected list item carrying measurement metadata and display text.
         """
         from image_loader import open_image_file
 
@@ -1003,7 +1043,9 @@ class RenderSettingsDialog(QtWidgets.QDialog):
         layout.addLayout(form)
 
         self.chk_hardware = QtWidgets.QCheckBox("Use hardware acceleration (OpenGL)")
-        self.chk_hardware.setChecked(bool(current.get("use_hardware_acceleration", True)))
+        self.chk_hardware.setChecked(
+            bool(current.get("use_hardware_acceleration", True))
+        )
         form.addRow("Rendering backend:", self.chk_hardware)
 
         self.cmb_quality = QtWidgets.QComboBox()
@@ -1011,7 +1053,11 @@ class RenderSettingsDialog(QtWidgets.QDialog):
         self.cmb_quality.addItem("Balanced (linear + downsample)", RESAMPLING_BALANCED)
         self.cmb_quality.addItem("High quality (mipmap anti-aliasing)", RESAMPLING_HIGH)
 
-        quality = str(current.get("image_resampling_quality", RESAMPLING_HIGH)).strip().lower()
+        quality = (
+            str(current.get("image_resampling_quality", RESAMPLING_HIGH))
+            .strip()
+            .lower()
+        )
         index = max(0, self.cmb_quality.findData(quality))
         self.cmb_quality.setCurrentIndex(index)
         form.addRow("Image resampling:", self.cmb_quality)
@@ -1033,10 +1079,12 @@ class RenderSettingsDialog(QtWidgets.QDialog):
     def selected_settings(self) -> RenderSettings:
         """Return settings selected in the dialog controls.
 
-            Returns:
-                Render-settings dictionary built from current dialog control values.
+        Returns:
+            Render-settings dictionary built from current dialog control values.
         """
         return {
             "use_hardware_acceleration": self.chk_hardware.isChecked(),
-            "image_resampling_quality": str(self.cmb_quality.currentData() or RESAMPLING_HIGH),
+            "image_resampling_quality": str(
+                self.cmb_quality.currentData() or RESAMPLING_HIGH
+            ),
         }

@@ -12,16 +12,17 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
+import line_profile_logic
 import unit_utils
 import utils
-import line_profile_logic
-from dialogs import MeasurementHistoryWindow, LineProfileWindow
-from measurement_tools import MeasurementLabel, LABEL_BRUSH_COLOR, DRAWN_LINE_PEN
+from dialogs import LineProfileWindow, MeasurementHistoryWindow
+from measurement_tools import DRAWN_LINE_PEN, LABEL_BRUSH_COLOR, MeasurementLabel
 from types_common import LoggerLike
 
 
 class _MeasurementControllerOwner(Protocol):
     """Protocol for objects that own a MeasurementController."""
+
     _line_draw_mode: str
     _on_calibration_pixels_selected: Any
     _calibration_dialog_state: dict[str, Any] | None
@@ -48,19 +49,21 @@ class _MeasurementControllerOwner(Protocol):
     def _prepare_for_measurement_input(self) -> None:
         """Prepare the viewer for measurement input."""
         ...
+
     def _open_calibration_dialog(self, state: dict[str, Any]) -> None:
         """Open the calibration dialog with saved state.
 
-            Args:
-                state: Persisted calibration-dialog state restored after distance picking.
+        Args:
+            state: Persisted calibration-dialog state restored after distance picking.
         """
         ...
+
     def _on_measurement_drawing_state_changed(self, is_drawing: bool) -> None:
         """Handle measurement drawing mode state changes.
 
-                        Args:
-                            is_drawing: Boolean flag indicating whether drawing.
-                    
+        Args:
+            is_drawing: Boolean flag indicating whether drawing.
+
         """
         ...
 
@@ -70,7 +73,7 @@ class MeasurementController:
 
     def __init__(self, viewer: _MeasurementControllerOwner, logger: LoggerLike):
         """Initialize the measurement controller.
-        
+
         Args:
             viewer: The image viewer window that owns this controller.
             logger: Logger for debug output.
@@ -80,12 +83,14 @@ class MeasurementController:
 
     def exit_measure_mode(self) -> None:
         """Exit measurement mode and restore the line tool state.
-        
+
         Disables the line drawing tool and updates the UI to reflect the change.
         If in calibration mode, restores the calibration dialog with pending state.
         """
         viewer = self.viewer
-        self.logger.debug("Exiting measurement mode (line_draw_mode=%s)", viewer._line_draw_mode)
+        self.logger.debug(
+            "Exiting measurement mode (line_draw_mode=%s)", viewer._line_draw_mode
+        )
         if viewer._line_draw_mode == "calibration":
             viewer._line_draw_mode = "measurement"
             viewer._on_calibration_pixels_selected = None
@@ -93,7 +98,9 @@ class MeasurementController:
             viewer._calibration_dialog_state = None
             if state:
                 self.logger.debug("Restoring calibration dialog with pending state")
-                QtCore.QTimer.singleShot(0, lambda: viewer._open_calibration_dialog(state))
+                QtCore.QTimer.singleShot(
+                    0, lambda: viewer._open_calibration_dialog(state)
+                )
 
         if viewer.btn_measure is not None and viewer.btn_measure.isChecked():
             viewer.btn_measure.setChecked(False)
@@ -107,7 +114,7 @@ class MeasurementController:
 
     def toggle_line_measurement(self) -> None:
         """Toggle distance measurement mode on/off.
-        
+
         Enables or disables the line-drawing tool for distance measurements.
         Updates the measurement mode button styling to indicate active state.
         """
@@ -135,7 +142,7 @@ class MeasurementController:
 
     def start_distance_measurement(self) -> None:
         """Initiate a distance measurement operation.
-        
+
         Activates the measurement mode button and enables the line drawing tool.
         """
         viewer = self.viewer
@@ -145,13 +152,15 @@ class MeasurementController:
 
     def start_profile_measurement(self) -> None:
         """Initiate a line profile measurement operation.
-        
+
         Prepares the viewer for profile input and enables the line drawing tool.
         Shows an information dialog if the line tool is unavailable.
         """
         viewer = self.viewer
         if viewer.line_tool is None:
-            self.logger.debug("Profile measurement requested but line tool is unavailable")
+            self.logger.debug(
+                "Profile measurement requested but line tool is unavailable"
+            )
             QtWidgets.QMessageBox.information(
                 viewer,
                 "Profile",
@@ -173,18 +182,20 @@ class MeasurementController:
 
     def on_line_drawn(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> None:
         """Handle a line being drawn for measurement.
-        
+
         Processes the line based on the current drawing mode:
         - "profile": Adds a line profile measurement.
         - "calibration": Converts physical distance to pixel distance via callback.
         - "measurement": Adds a distance or FFT frequency measurement.
-        
+
         Args:
             p1: Start point of the line (x, y).
             p2: End point of the line (x, y).
         """
         viewer = self.viewer
-        self.logger.debug("Line drawn: mode=%s p1=%s p2=%s", viewer._line_draw_mode, p1, p2)
+        self.logger.debug(
+            "Line drawn: mode=%s p1=%s p2=%s", viewer._line_draw_mode, p1, p2
+        )
         if viewer._line_draw_mode == "profile":
             self._add_profile_measurement(p1, p2)
             return
@@ -222,8 +233,12 @@ class MeasurementController:
             dist_freq = float(np.hypot(dx_freq, dy_freq))
 
             if viewer._nyq_x and viewer._nyq_y and viewer._fft_region is not None:
-                px_scale_x = (2.0 * float(viewer._nyq_x)) / float(viewer._fft_region.shape[1])
-                px_scale_y = (2.0 * float(viewer._nyq_y)) / float(viewer._fft_region.shape[0])
+                px_scale_x = (2.0 * float(viewer._nyq_x)) / float(
+                    viewer._fft_region.shape[1]
+                )
+                px_scale_y = (2.0 * float(viewer._nyq_y)) / float(
+                    viewer._fft_region.shape[0]
+                )
                 if px_scale_x != 0 and px_scale_y != 0:
                     dx_px = dx_freq / px_scale_x
                     dy_px = dy_freq / px_scale_y
@@ -288,16 +303,18 @@ class MeasurementController:
 
     def on_measurement_label_clicked(self, label: pg.TextItem) -> None:
         """Handle a measurement label being clicked.
-        
+
         Selects the measurement and highlights its label with a yellow color.
         Other measurement labels are reset to their original color.
-        
+
         Args:
             label: The TextItem label that was clicked.
         """
         viewer = self.viewer
         selected_index = None
-        for idx, (_measurement_id, _line_item, text_item) in enumerate(viewer.measurement_items):
+        for idx, (_measurement_id, _line_item, text_item) in enumerate(
+            viewer.measurement_items
+        ):
             if text_item is label:
                 selected_index = idx
                 break
@@ -305,7 +322,9 @@ class MeasurementController:
         viewer.selected_measurement_index = selected_index
         self.logger.debug("Measurement label selected: index=%s", selected_index)
 
-        for idx, (_measurement_id, _line_item, text_item) in enumerate(viewer.measurement_items):
+        for idx, (_measurement_id, _line_item, text_item) in enumerate(
+            viewer.measurement_items
+        ):
             if idx == selected_index:
                 self.set_label_fill(text_item, pg.mkBrush(255, 200, 0, 255))
             else:
@@ -313,7 +332,7 @@ class MeasurementController:
 
     def clear_measurements_from_history(self) -> None:
         """Remove all measurements from the viewer per history window request.
-        
+
         Similar to clear_measurements but called from the measurement history window.
         Clears both distance and profile measurements from the display.
         """
@@ -338,7 +357,7 @@ class MeasurementController:
 
     def delete_selected_measurement(self) -> None:
         """Delete the currently selected measurement from the viewer.
-        
+
         Removes the selected measurement's line and label from the plot.
         Does nothing if no measurement is selected or the index is invalid.
         """
@@ -357,7 +376,9 @@ class MeasurementController:
             return
 
         deleted_index = viewer.selected_measurement_index
-        measurement_id, line_item, text_item = viewer.measurement_items.pop(viewer.selected_measurement_index)
+        measurement_id, line_item, text_item = viewer.measurement_items.pop(
+            viewer.selected_measurement_index
+        )
         viewer.p1.removeItem(line_item)
         viewer.p1.removeItem(text_item)
 
@@ -374,7 +395,7 @@ class MeasurementController:
     @staticmethod
     def set_label_fill(text_item: pg.TextItem, brush: pg.QtGui.QBrush) -> None:
         """Set the background fill color of a measurement label.
-        
+
         Args:
             text_item: The TextItem label to modify.
             brush: The brush to use for the fill color.
@@ -386,14 +407,16 @@ class MeasurementController:
 
     def delete_measurement_by_label(self, label_text: str) -> None:
         """Delete a measurement by its label text.
-        
+
         Args:
             label_text: The label text to delete (e.g., "M#5" or "P#3").
         """
         viewer = self.viewer
         self.logger.debug("Delete measurement by label requested: %s", label_text)
         target_index = None
-        for idx, (_measurement_id, _line_item, text_item) in enumerate(viewer.measurement_items):
+        for idx, (_measurement_id, _line_item, text_item) in enumerate(
+            viewer.measurement_items
+        ):
             if text_item.toPlainText() == label_text:
                 target_index = idx
                 break
@@ -420,7 +443,7 @@ class MeasurementController:
 
     def delete_measurement_by_history_id(self, entry_id: int, entry_type: str) -> None:
         """Delete a measurement by its history entry ID.
-        
+
         Args:
             entry_id: The ID of the measurement from the history window.
             entry_type: Type of measurement ("distance" or "profile").
@@ -433,11 +456,15 @@ class MeasurementController:
         )
         if entry_type == "profile":
             deleted = self._delete_profile_measurement(entry_id)
-            self.logger.debug("Delete profile by history id result: deleted=%s", deleted)
+            self.logger.debug(
+                "Delete profile by history id result: deleted=%s", deleted
+            )
             return
 
         target_index = None
-        for idx, (measurement_id, _line_item, _text_item) in enumerate(viewer.measurement_items):
+        for idx, (measurement_id, _line_item, _text_item) in enumerate(
+            viewer.measurement_items
+        ):
             if measurement_id == entry_id:
                 target_index = idx
                 break
@@ -451,10 +478,10 @@ class MeasurementController:
 
     def open_measurement_by_history_id(self, entry_id: int, entry_type: str) -> None:
         """Open/display a measurement from the history window.
-        
+
         Selects the measurement to display its profile plot (for profiles) or
         highlights the measurement on the main image (for distances).
-        
+
         Args:
             entry_id: The ID of the measurement from the history window.
             entry_type: Type of measurement ("distance" or "profile").
@@ -488,14 +515,20 @@ class MeasurementController:
                 self.logger.debug("Reopened existing profile window: id=%s", entry_id)
                 return
             except RuntimeError:
-                self.logger.debug("Profile window object invalid, recreating: id=%s", entry_id)
+                self.logger.debug(
+                    "Profile window object invalid, recreating: id=%s", entry_id
+                )
 
         distances = record.get("distances")
         intensities = record.get("intensities")
         x_axis_label = str(record.get("x_axis_label", "Distance (px)"))
         title = str(record.get("title", f"Profile Measurement #{entry_id}"))
-        if not isinstance(distances, np.ndarray) or not isinstance(intensities, np.ndarray):
-            self.logger.debug("Open profile failed: profile data missing for id=%s", entry_id)
+        if not isinstance(distances, np.ndarray) or not isinstance(
+            intensities, np.ndarray
+        ):
+            self.logger.debug(
+                "Open profile failed: profile data missing for id=%s", entry_id
+            )
             return
 
         profile_window = LineProfileWindow(
@@ -511,9 +544,11 @@ class MeasurementController:
         record["window"] = profile_window
         self.logger.debug("Recreated and opened profile window: id=%s", entry_id)
 
-    def rename_measurement_by_history_id(self, entry_id: int, entry_type: str, new_text: str) -> None:
+    def rename_measurement_by_history_id(
+        self, entry_id: int, entry_type: str, new_text: str
+    ) -> None:
         """Rename a measurement via the history window.
-        
+
         Args:
             entry_id: The ID of the measurement from the history window.
             entry_type: Type of measurement ("distance" or "profile").
@@ -551,7 +586,9 @@ class MeasurementController:
             self.logger.debug("Renamed profile measurement: id=%s", entry_id)
             return
 
-        for idx, (measurement_id, _line_item, text_item) in enumerate(viewer.measurement_items):
+        for idx, (measurement_id, _line_item, text_item) in enumerate(
+            viewer.measurement_items
+        ):
             if measurement_id != entry_id:
                 continue
 
@@ -559,21 +596,25 @@ class MeasurementController:
                 text_item.setText(new_text)
             elif hasattr(text_item, "setPlainText"):
                 text_item.setPlainText(new_text)
-            self.logger.debug("Renamed distance measurement: id=%s index=%s", entry_id, idx)
+            self.logger.debug(
+                "Renamed distance measurement: id=%s index=%s", entry_id, idx
+            )
             return
 
         self.logger.debug("Rename distance ignored: id not found")
 
-    def format_measurement_label(self, result: dict, measurement_id: Optional[int] = None) -> str:
+    def format_measurement_label(
+        self, result: dict, measurement_id: Optional[int] = None
+    ) -> str:
         """Format a measurement result dictionary into a display label.
-        
+
         Formats the label based on the current view mode (FFT vs image),
         including physical units and d-spacing if applicable.
-        
+
         Args:
             result: Dictionary with measurement data (distance_physical, distance_pixels, scales, etc.).
             measurement_id: Optional ID number to include in the label prefix.
-            
+
         Returns:
             Formatted label string with physical units and pixel distance.
         """
@@ -615,7 +656,7 @@ class MeasurementController:
 
     def show_measurement_history(self) -> None:
         """Display the measurement history window.
-        
+
         Opens or focuses the history window that shows all measurements taken
         and allows reviewing, renaming, and deleting measurements.
         """
@@ -626,7 +667,9 @@ class MeasurementController:
 
         history_window = viewer.measurement_history_window
         if history_window is None:
-            self.logger.debug("Measurement history window unavailable after creation attempt")
+            self.logger.debug(
+                "Measurement history window unavailable after creation attempt"
+            )
             return
 
         history_window.show()
@@ -642,10 +685,10 @@ class MeasurementController:
         measurement_type: str = "distance",
     ) -> None:
         """Add a measurement entry to the history window.
-        
+
         Creates the history window if it doesn't exist. Adds the measurement
         with its ID and type for later retrieval.
-        
+
         Args:
             measurement_text: The formatted measurement label text.
             measurement_id: Optional ID number for the measurement.
@@ -653,12 +696,16 @@ class MeasurementController:
         """
         viewer = self.viewer
         if viewer.measurement_history_window is None:
-            self.logger.debug("Creating measurement history window for first measurement")
+            self.logger.debug(
+                "Creating measurement history window for first measurement"
+            )
             viewer.measurement_history_window = MeasurementHistoryWindow(viewer)
 
         history_window = viewer.measurement_history_window
         if history_window is None:
-            self.logger.debug("Measurement history add skipped: history window unavailable")
+            self.logger.debug(
+                "Measurement history add skipped: history window unavailable"
+            )
             return
 
         history_window.add_measurement(
@@ -681,10 +728,10 @@ class MeasurementController:
         measurement_id: int,
     ) -> None:
         """Add visual measurement line and label to the plot.
-        
+
         Creates a PlotDataItem line between two points and a MeasurementLabel
         at the midpoint. Also adds the measurement to history.
-        
+
         Args:
             p1: Start point of the measurement line (x, y).
             p2: End point of the measurement line (x, y).
@@ -722,12 +769,14 @@ class MeasurementController:
             measurement_type="distance",
         )
 
-    def _add_profile_measurement(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> None:
+    def _add_profile_measurement(
+        self, p1: Tuple[float, float], p2: Tuple[float, float]
+    ) -> None:
         """Add a line profile measurement between two points.
-        
+
         Extracts intensities along the line, creates a plot window showing the
         profile, and adds a label to the main plot.
-        
+
         Args:
             p1: Start point of the profile line (x, y).
             p2: End point of the profile line (x, y).
@@ -800,14 +849,14 @@ class MeasurementController:
         p2: Tuple[float, float],
     ) -> tuple[np.ndarray, np.ndarray, pg.PlotDataItem, str] | None:
         """Extract intensity values along a line in the image.
-        
+
         Samples pixel intensities using bilinear interpolation along a line
         between two points. Returns the distances and intensities.
-        
+
         Args:
             p1: Start point of the profile line (x, y).
             p2: End point of the profile line (x, y).
-            
+
         Returns:
             Tuple of (distances, intensities, line_item, x_axis_label),
             or None if extraction fails.
@@ -819,7 +868,10 @@ class MeasurementController:
 
         image = np.asarray(viewer.data, dtype=float)
         if image.ndim != 2 or image.shape[0] < 2 or image.shape[1] < 2:
-            self.logger.debug("Profile extraction failed: invalid image shape=%s", getattr(image, "shape", None))
+            self.logger.debug(
+                "Profile extraction failed: invalid image shape=%s",
+                getattr(image, "shape", None),
+            )
             return None
 
         width = image.shape[1]
@@ -851,7 +903,9 @@ class MeasurementController:
                     offset_y=float(viewer.ax_y.offset),
                 )
             except Exception:
-                self.logger.debug("Profile extraction failed: invalid axis calibration values")
+                self.logger.debug(
+                    "Profile extraction failed: invalid axis calibration values"
+                )
                 return None
 
         mapped = line_profile_logic.map_view_points_to_pixel(
@@ -920,15 +974,21 @@ class MeasurementController:
                 axis_calibration=axis_calibration,
             )
 
-            distances, x_axis_label, display_unit, reference_distance, scaled_ref = line_profile_logic.scaled_distance_axis(
-                distances_world=distances_world,
-                axis_unit=axis_unit,
-                view_mode=viewer.view_mode,
-                is_reciprocal_space=viewer.is_reciprocal_space,
-                format_reciprocal_scale=utils.format_reciprocal_scale,
-                format_si_scale=utils.format_si_scale,
+            distances, x_axis_label, display_unit, reference_distance, scaled_ref = (
+                line_profile_logic.scaled_distance_axis(
+                    distances_world=distances_world,
+                    axis_unit=axis_unit,
+                    view_mode=viewer.view_mode,
+                    is_reciprocal_space=viewer.is_reciprocal_space,
+                    format_reciprocal_scale=utils.format_reciprocal_scale,
+                    format_si_scale=utils.format_si_scale,
+                )
             )
-            if display_unit is not None and reference_distance is not None and scaled_ref is not None:
+            if (
+                display_unit is not None
+                and reference_distance is not None
+                and scaled_ref is not None
+            ):
                 self.logger.debug(
                     "Profile x-axis uses calibrated units with SI formatting: axis_unit=%s display_unit=%s ref_world=%.6g ref_scaled=%.6g",
                     axis_unit,
@@ -959,14 +1019,16 @@ class MeasurementController:
         return distances, intensities, line_item, x_axis_label
 
     @staticmethod
-    def _sample_image_bilinear(image: np.ndarray, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    def _sample_image_bilinear(
+        image: np.ndarray, xs: np.ndarray, ys: np.ndarray
+    ) -> np.ndarray:
         """Sample image intensities using bilinear interpolation.
-        
+
         Args:
             image: 2D image array.
             xs: X coordinates for sampling.
             ys: Y coordinates for sampling.
-            
+
         Returns:
             Interpolated intensity values at the given coordinates.
         """
@@ -992,12 +1054,12 @@ class MeasurementController:
 
     def _delete_profile_measurement(self, profile_id: int) -> bool:
         """Delete a profile measurement by ID.
-        
+
         Removes the profile line, label, and plot window from the viewer.
-        
+
         Args:
             profile_id: The ID of the profile measurement to delete.
-            
+
         Returns:
             True if successfully deleted; False if not found.
         """

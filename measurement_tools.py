@@ -3,12 +3,12 @@
 # See LICENSE for full license terms.
 
 """Measurement-related tools: line drawing, FFT ROI, and labels."""
+
 import logging
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
-
 
 # Qt signal compatibility (PyQt5 vs PySide)
 Signal = getattr(QtCore, "pyqtSignal", getattr(QtCore, "Signal", None))
@@ -23,7 +23,9 @@ LABEL_BRUSH_COLOR = pg.mkBrush(240, 240, 255, 235)
 class LineDrawingTool:
     """Tool for drawing measurement lines on a plot."""
 
-    def __init__(self, plot: pg.PlotItem, on_line_drawn_callback, on_drawing_state_changed=None):
+    def __init__(
+        self, plot: pg.PlotItem, on_line_drawn_callback, on_drawing_state_changed=None
+    ):
         """Initialize line-drawing tool state and event handler references.
 
         Args:
@@ -51,9 +53,9 @@ class LineDrawingTool:
     def _set_fft_roi_interaction_toggle(self, enabled: bool) -> None:
         """Enable/disable mouse interaction on FFT ROI items while measuring.
 
-                        Args:
-                            enabled: Input value for enabled.
-                    
+        Args:
+            enabled: Input value for enabled.
+
         """
         items = getattr(self.plot, "items", [])
         for item in items:
@@ -124,9 +126,9 @@ class LineDrawingTool:
     def _set_drawing_state(self, is_drawing: bool) -> None:
         """Update drawing-state flag and notify listeners when it changes.
 
-                        Args:
-                            is_drawing: Boolean flag indicating whether drawing.
-                    
+        Args:
+            is_drawing: Boolean flag indicating whether drawing.
+
         """
         self.drawing = is_drawing
         if self._last_drawing_state == is_drawing:
@@ -145,9 +147,9 @@ class LineDrawingTool:
     def _begin_line(self, view_pos) -> None:
         """Start a new preview line from the given view position.
 
-                        Args:
-                            view_pos: Input value for view pos.
-                    
+        Args:
+            view_pos: Input value for view pos.
+
         """
         self._set_drawing_state(True)
         self.start_point = (view_pos.x(), view_pos.y())
@@ -157,9 +159,9 @@ class LineDrawingTool:
     def _update_line_preview(self, view_pos) -> None:
         """Redraw the temporary preview segment to the current cursor point.
 
-                        Args:
-                            view_pos: Input value for view pos.
-                    
+        Args:
+            view_pos: Input value for view pos.
+
         """
         if self.start_point is None:
             return
@@ -174,9 +176,9 @@ class LineDrawingTool:
     def _finish_line(self, view_pos) -> None:
         """Finalize the current line and trigger the line-drawn callback.
 
-                        Args:
-                            view_pos: Input value for view pos.
-                    
+        Args:
+            view_pos: Input value for view pos.
+
         """
         if self.start_point is None:
             return
@@ -190,9 +192,9 @@ class LineDrawingTool:
     def _on_mouse_press(self, event):
         """Handle mouse press for line drawing.
 
-                        Args:
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            event: Qt event object carrying user interaction details.
+
         """
         if not self.is_enabled:
             self.original_mouse_press(event)
@@ -212,9 +214,9 @@ class LineDrawingTool:
     def _on_mouse_move(self, event):
         """Handle mouse move for line drawing preview.
 
-                        Args:
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            event: Qt event object carrying user interaction details.
+
         """
         if not self.is_enabled:
             self.original_mouse_move(event)
@@ -236,9 +238,9 @@ class LineDrawingTool:
     def _on_mouse_release(self, event):
         """Handle mouse release.
 
-                        Args:
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            event: Qt event object carrying user interaction details.
+
         """
         if not self.is_enabled:
             self.original_mouse_release(event)
@@ -255,7 +257,9 @@ class LineDrawingTool:
             self._clear_preview_line()
             self._set_drawing_state(False)
             self.start_point = None
-            logger.debug("LineDrawingTool draw cancelled: mouse release outside plot area")
+            logger.debug(
+                "LineDrawingTool draw cancelled: mouse release outside plot area"
+            )
             self.original_mouse_release(event)
             return
 
@@ -268,9 +272,9 @@ class LineDrawingTool:
     def _on_mouse_drag(self, event):
         """Handle drag events directly so measurement works after prior pan/ROI drags.
 
-                        Args:
-                            event: Qt event object carrying user interaction details.
-                    
+        Args:
+            event: Qt event object carrying user interaction details.
+
         """
         if not self.is_enabled:
             if self.original_mouse_drag is not None:
@@ -283,7 +287,9 @@ class LineDrawingTool:
                 self._clear_preview_line()
                 self._set_drawing_state(False)
                 self.start_point = None
-                logger.debug("LineDrawingTool draw cancelled: drag finished outside plot area")
+                logger.debug(
+                    "LineDrawingTool draw cancelled: drag finished outside plot area"
+                )
             event.accept()
             return
 
@@ -307,9 +313,9 @@ class FFTBoxROI(pg.RectROI):
     def set_interaction_enabled(self, enabled: bool) -> None:
         """Toggle interaction for ROI and its resize/rotate handle items.
 
-                        Args:
-                            enabled: Input value for enabled.
-                    
+        Args:
+            enabled: Input value for enabled.
+
         """
         mouse_buttons = QtCore.Qt.LeftButton if enabled else QtCore.Qt.NoButton
 
@@ -342,9 +348,9 @@ class FFTBoxROI(pg.RectROI):
     def mouseClickEvent(self, ev):  # type: ignore[override]
         """Emit signals on single and double clicks while preserving default behavior.
 
-                        Args:
-                            ev: Input value for ev.
-                    
+        Args:
+            ev: Input value for ev.
+
         """
         # Call base implementation if available (version-safe)
         try:
@@ -367,9 +373,9 @@ class MeasurementLabel(pg.TextItem):
     def mouseClickEvent(self, ev):  # type: ignore[override]
         """Emit a signal when the label is clicked.
 
-                        Args:
-                            ev: Input value for ev.
-                    
+        Args:
+            ev: Input value for ev.
+
         """
         super().mouseClickEvent(ev)
 

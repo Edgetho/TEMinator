@@ -14,15 +14,15 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 def parse_command_input(text: str) -> Optional[Tuple[str, str]]:
     """Parse command-line text into ``(command, argument)``.
 
-                Accepts optional leading ``:`` and trims surrounding whitespace.
-                Returns ``None`` when the input does not contain a command.
+    Accepts optional leading ``:`` and trims surrounding whitespace.
+    Returns ``None`` when the input does not contain a command.
 
-                Args:
-                    text: User-facing text value for this operation.
+    Args:
+        text: User-facing text value for this operation.
 
-                Returns:
-                    Detailed parameter description.
-            
+    Returns:
+        Detailed parameter description.
+
     """
 
     clean = (text or "").strip()
@@ -41,9 +41,9 @@ def parse_command_input(text: str) -> Optional[Tuple[str, str]]:
 def enter_command_mode(command_edit: Optional[QtWidgets.QLineEdit]) -> None:
     """Show and focus a command line edit prefilled with ':'.
 
-                Args:
-                    command_edit: Input value for command edit.
-            
+    Args:
+        command_edit: Input value for command edit.
+
     """
 
     if command_edit is None:
@@ -62,10 +62,10 @@ def exit_command_mode(
 ) -> None:
     """Hide and clear a command line edit and optionally restore focus.
 
-                Args:
-                    command_edit: Input value for command edit.
-                    focus_target: Input value for focus target.
-            
+    Args:
+        command_edit: Input value for command edit.
+        focus_target: Input value for focus target.
+
     """
 
     if command_edit is None:
@@ -130,7 +130,10 @@ class CommandModeController:
             return False
 
         key_event = event
-        if getattr(key_event, "text", lambda: "")() == ":" and not key_event.modifiers():
+        if (
+            getattr(key_event, "text", lambda: "")() == ":"
+            and not key_event.modifiers()
+        ):
             self.enter_mode()
             return True
 

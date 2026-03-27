@@ -17,12 +17,13 @@ from file_navigation import open_directory_fuzzy_dialog, open_image_by_name
 
 class _MainWindowCommandsOwner(Protocol):
     """Protocol for objects that own the main window command router."""
+
     def _open_image(self, file_path: str) -> None:
         """Open an image file.
 
-                        Args:
-                            file_path: Path to the target file on disk.
-                    
+        Args:
+            file_path: Path to the target file on disk.
+
         """
         ...
 
@@ -32,7 +33,7 @@ class MainWindowCommandRouter:
 
     def __init__(self, window: _MainWindowCommandsOwner):
         """Initialize the command router for the main window.
-        
+
         Args:
             window: The main window instance that will execute commands.
         """
@@ -40,15 +41,15 @@ class MainWindowCommandRouter:
 
     def run_vim_command(self, cmd: str, arg: str) -> bool:
         """Execute a vim-style command.
-        
+
         Supported commands:
         - E: Open directory browser
         - e <filename>: Open a specific file
-        
+
         Args:
             cmd: Command name (case-insensitive).
             arg: Optional argument for the command.
-            
+
         Returns:
             True if command was recognized and executed, False otherwise.
         """
@@ -65,7 +66,9 @@ class MainWindowCommandRouter:
 
         if lower_cmd == "e":
             if not arg:
-                QtWidgets.QMessageBox.information(self.window, "Command", "Usage: :e <filename>")
+                QtWidgets.QMessageBox.information(
+                    self.window, "Command", "Usage: :e <filename>"
+                )
                 return True
             self.open_file_by_name(arg)
             return True
@@ -74,7 +77,7 @@ class MainWindowCommandRouter:
 
     def open_file_by_name(self, filename: str) -> None:
         """Open an image file by name relative to the current working directory.
-        
+
         Args:
             filename: Filename or relative path to open.
         """

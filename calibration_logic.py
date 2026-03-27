@@ -100,7 +100,9 @@ def parse_reference_ppu(
         return ReferencePPUResult(ppu=None, target_units=target_units, error=None)
 
     _value_raw, explicit_unit = raw_distance
-    if explicit_unit and unit_utils.unit_kind(explicit_unit) != unit_utils.unit_kind(target_units):
+    if explicit_unit and unit_utils.unit_kind(explicit_unit) != unit_utils.unit_kind(
+        target_units
+    ):
         target_units = unit_utils.normalize_axis_unit(explicit_unit, default="nm")
 
     parsed = unit_utils.parse_distance_to_target_units(text_distance, target_units)
