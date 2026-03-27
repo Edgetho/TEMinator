@@ -4,7 +4,7 @@
 
 """Scale bar graphics items for image and FFT views."""
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pyqtgraph as pg
@@ -162,6 +162,8 @@ class DynamicScaleBar(pg.GraphicsObject):
 
         # Keep this item fixed in screen space
         self.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setAcceptedMouseButtons(QtCore.Qt.NoButton)
+        self.setAcceptHoverEvents(False)
         self.setZValue(1000)
 
         # Parent directly to the ViewBox
@@ -345,3 +347,144 @@ class DynamicScaleBar(pg.GraphicsObject):
         # the standard scale-bar label. Kept in the same red color.
         if self._extra_label:
             p.drawText(0, -int(cap) - 3 - 12, self._extra_label)
+
+
+class DynamicLegendBox(pg.GraphicsObject):
+    """Dynamic bottom-right legend overlay for selected EDX maps."""
+
+    def __init__(
+        self,
+        viewbox: pg.ViewBox,
+        margin: int = 20,
+        min_frac: float = 0.14,
+        max_frac: float = 0.32,
+    ):
+        """Initialize a dynamic legend overlay attached to a ViewBox.
+
+        Args:
+            viewbox: The plot ViewBox to attach to.
+            margin: Pixel margin from the view edges.
+            min_frac: Minimum box width as fraction of view width.
+            max_frac: Maximum box width as fraction of view width.
+        """
+        super().__init__()
+        self.vb = viewbox
+        self.margin = int(margin)
+        self.min_frac = float(min_frac)
+        self.max_frac = float(max_frac)
+
+        self._entries: List[Tuple[str, Tuple[int, int, int]]] = []
+        self._rect = QtCore.QRectF(0, 0, 0, 0)
+        self._font = QtGui.QFont()
+        self._font.setPointSize(8)
+        self._swatch_size = 12.0
+        self._line_height = 14.0
+        self._padding = 8.0
+        self._spacing = 6.0
+
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setAcceptedMouseButtons(QtCore.Qt.NoButton)
+        self.setAcceptHoverEvents(False)
+        self.setZValue(1000)
+        self.setParentItem(self.vb)
+
+        self.vb.sigRangeChanged.connect(self._update_geometry)
+        self.vb.sigResized.connect(self._update_geometry)
+
+        self.hide()
+        self._update_geometry()
+
+    def set_entries(self, entries: List[Tuple[str, Tuple[int, int, int]]]) -> None:
+        """Set legend entries as ``(name, rgb)`` tuples."""
+        self._entries = list(entries)
+        if self._entries:
+            self.show()
+        else:
+            self.hide()
+        self._update_geometry()
+        self.update()
+
+    def _update_geometry(self, *args):  # pragma: no cover - pure UI
+        """Recalculate legend geometry and pin it to the bottom-right corner."""
+        _ = args
+        width_px = max(float(self.vb.width()), 1.0)
+        height_px = max(float(self.vb.height()), 1.0)
+
+        font_size = int(max(8, min(12, round(width_px * 0.013))))
+        self._font.setPointSize(font_size)
+        metrics = QtGui.QFontMetrics(self._font)
+
+        self._swatch_size = float(max(10, min(18, round(width_px * 0.016))))
+        self._padding = float(max(6, min(12, round(width_px * 0.010))))
+        self._spacing = float(max(4, min(10, round(width_px * 0.008))))
+        self._line_height = float(max(self._swatch_size, metrics.height()))
+
+        if not self._entries:
+            self.prepareGeometryChange()
+            self._rect = QtCore.QRectF(0, 0, 0, 0)
+            self.setPos(
+                width_px - self.margin,
+                height_px - self.margin,
+            )
+            return
+
+        max_text_width = 0.0
+        for name, _rgb in self._entries:
+            max_text_width = max(max_text_width, float(metrics.horizontalAdvance(name)))
+
+        content_width = self._swatch_size + self._spacing + max_text_width
+        desired_width = content_width + 2.0 * self._padding
+        min_width = self.min_frac * width_px
+        max_width = self.max_frac * width_px
+        box_width = max(min_width, min(desired_width, max_width))
+
+        row_count = float(len(self._entries))
+        content_height = row_count * self._line_height + max(0.0, (row_count - 1.0) * self._spacing)
+        box_height = content_height + 2.0 * self._padding
+
+        self.prepareGeometryChange()
+        self._rect = QtCore.QRectF(0, 0, box_width, box_height)
+        self.setPos(
+            width_px - self.margin - box_width,
+            height_px - self.margin - box_height,
+        )
+
+    def boundingRect(self):  # type: ignore[override]
+        """Return legend box bounding rectangle."""
+        return self._rect
+
+    def paint(self, p, *args):  # type: ignore[override]
+        """Paint the legend box and all map color entries."""
+        _ = args
+        if not self._entries:
+            return
+
+        palette = QtWidgets.QApplication.palette()
+        bg = QtGui.QColor(palette.color(QtGui.QPalette.Window))
+        bg.setAlpha(180)
+        border = QtGui.QColor(palette.color(QtGui.QPalette.Mid))
+        text_color = QtGui.QColor(palette.color(QtGui.QPalette.WindowText))
+
+        p.setPen(QtGui.QPen(border, 1))
+        p.setBrush(QtGui.QBrush(bg))
+        p.drawRoundedRect(self._rect, 4.0, 4.0)
+
+        p.setFont(self._font)
+        p.setPen(QtGui.QPen(text_color))
+
+        x0 = self._padding
+        y = self._padding
+
+        for name, rgb in self._entries:
+            swatch_rect = QtCore.QRectF(x0, y, self._swatch_size, self._swatch_size)
+            swatch_color = QtGui.QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+            p.setPen(QtGui.QPen(border, 1))
+            p.setBrush(QtGui.QBrush(swatch_color))
+            p.drawRect(swatch_rect)
+
+            text_x = x0 + self._swatch_size + self._spacing
+            baseline = y + (self._line_height + QtGui.QFontMetrics(self._font).ascent()) / 2.0 - 1.0
+            p.setPen(QtGui.QPen(text_color))
+            p.drawText(QtCore.QPointF(text_x, baseline), name)
+
+            y += self._line_height + self._spacing

@@ -7,13 +7,145 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import hyperspy.api as hs
 import numpy as np
 from pyqtgraph.Qt import QtWidgets
 
 logger = logging.getLogger(__name__)
+
+
+def _metadata_to_dict(metadata_obj: Any) -> Dict[str, Any]:
+    """Convert a metadata object to a plain dictionary when possible.
+
+    Args:
+        metadata_obj: Metadata object or dictionary.
+
+    Returns:
+        Metadata as a dictionary, or empty dictionary when conversion fails.
+    """
+    if metadata_obj is None:
+        return {}
+    if isinstance(metadata_obj, dict):
+        return metadata_obj
+    if hasattr(metadata_obj, "as_dictionary"):
+        try:
+            converted = metadata_obj.as_dictionary()
+            return converted if isinstance(converted, dict) else {}
+        except Exception:
+            return {}
+    try:
+        converted = dict(metadata_obj)
+        return converted if isinstance(converted, dict) else {}
+    except Exception:
+        return {}
+
+
+def _get_signal_metadata_dict(signal: Any) -> Dict[str, Any]:
+    """Return mapped metadata dictionary from a signal.
+
+    Args:
+        signal: HyperSpy signal.
+
+    Returns:
+        Mapped metadata dictionary, or empty dictionary if unavailable.
+    """
+    return _metadata_to_dict(getattr(signal, "metadata", None))
+
+
+def _get_signal_original_metadata_dict(signal: Any) -> Dict[str, Any]:
+    """Return original metadata dictionary from a signal.
+
+    Args:
+        signal: HyperSpy signal.
+
+    Returns:
+        Original metadata dictionary, or empty dictionary if unavailable.
+    """
+    return _metadata_to_dict(getattr(signal, "original_metadata", None))
+
+
+def _extract_colormix_selection(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract ordered colormixSelection entries from metadata.
+
+    Args:
+        meta: Original metadata dictionary.
+
+    Returns:
+        Ordered list of colormix entries, each containing at least name and stem.
+    """
+    operations = meta.get("Operations", {})
+    if not isinstance(operations, dict):
+        return []
+
+    iq_ops = operations.get("ImageQuantificationOperation", {})
+    if not isinstance(iq_ops, dict):
+        return []
+
+    for op_data in iq_ops.values():
+        if not isinstance(op_data, dict):
+            continue
+        colormix = op_data.get("colormixSelection")
+        if not isinstance(colormix, list):
+            continue
+
+        parsed_entries: List[Dict[str, Any]] = []
+        for entry in colormix:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "")).strip()
+            if not name:
+                continue
+            parsed_entries.append(
+                {
+                    "name": name,
+                    "stem": bool(entry.get("stem", False)),
+                    "selected": bool(entry.get("selected", False)),
+                    "color": entry.get("color", "#ffffff"),
+                }
+            )
+
+        if parsed_entries:
+            return parsed_entries
+
+    return []
+
+
+def _find_colormix_selection(signals: List[Any]) -> List[Dict[str, Any]]:
+    """Find colormixSelection metadata from the loaded signal set.
+
+    Args:
+        signals: Signals returned by HyperSpy for a file.
+
+    Returns:
+        Ordered colormix entries, or empty list when unavailable.
+    """
+    for signal in signals:
+        original_meta = _get_signal_original_metadata_dict(signal)
+        if not original_meta:
+            continue
+        colormix = _extract_colormix_selection(original_meta)
+        if colormix:
+            return colormix
+    return []
+
+
+def _extract_signal_title(signal: Any) -> Optional[str]:
+    """Extract a cleaned signal title from mapped metadata.
+
+    Args:
+        signal: HyperSpy signal.
+
+    Returns:
+        Title text when available, otherwise None.
+    """
+    meta = _get_signal_metadata_dict(signal)
+    general_meta = meta.get("General", {}) if isinstance(meta, dict) else {}
+    if not isinstance(general_meta, dict):
+        return None
+    title = str(general_meta.get("title", "")).strip()
+    return title or None
 
 
 def _is_edx_elemental_map(signal: Any) -> bool:
@@ -34,8 +166,8 @@ def _is_edx_elemental_map(signal: Any) -> bool:
             return False
 
         # Safely access metadata
-        meta = getattr(signal, "metadata", None) or {}
-        original_meta = getattr(signal, "original_metadata", None) or {}
+        meta = _get_signal_metadata_dict(signal)
+        original_meta = _get_signal_original_metadata_dict(signal)
         
         # Only proceed if we have dict-like objects
         if not isinstance(meta, dict) or not isinstance(original_meta, dict):
@@ -127,40 +259,31 @@ def _extract_element_name(signal: Any) -> Optional[str]:
     """
     try:
         # Try to get from metadata
-        meta = getattr(signal, "metadata", None) or {}
-        original_meta = getattr(signal, "original_metadata", None) or {}
+        meta = _get_signal_metadata_dict(signal)
+        original_meta = _get_signal_original_metadata_dict(signal)
         
         # Only proceed if we have dict-like objects
         if not isinstance(meta, dict) or not isinstance(original_meta, dict):
             return None
 
-        # Check Sample.elements in mapped metadata
+        # Check Sample.elements in mapped metadata (only reliable for single-entry lists)
         sample_data = meta.get("Sample", {})
         if isinstance(sample_data, dict) and "elements" in sample_data:
             elements = sample_data["elements"]
-            if isinstance(elements, list) and elements:
+            if isinstance(elements, list) and len(elements) == 1:
                 return elements[0]
 
         # Extract from signal title
-        general_meta = meta.get("General", {})
-        if not isinstance(general_meta, dict):
-            general_meta = {}
-        signal_name = general_meta.get("title", "")
+        signal_name = _extract_signal_title(signal) or ""
         if signal_name:
-            # Clean up name and try to match element
-            name_upper = signal_name.upper()
+            # Clean up name and return generic label
+            cleaned_name = signal_name
             # Remove common suffixes
             for suffix in [" MAP", " INTENSITY", " SIGNAL", " COUNTS"]:
-                name_upper = name_upper.replace(suffix, "")
-            name_upper = name_upper.strip()
-            
-            if name_upper in {
-                "H", "C", "N", "O", "F", "P", "S", "CL", "BR", "I",
-                "NA", "K", "CA", "MG", "AL", "SI", "FE", "NI", "CU",
-                "ZN", "AG", "AU", "PT", "PD", "TE", "TA", "W", "MO",
-                "V", "CR", "MN", "CO", "TI", "SC", "Y", "ZR", "HF",
-            }:
-                return name_upper
+                cleaned_name = cleaned_name.replace(suffix, "")
+            cleaned_name = cleaned_name.strip()
+            if cleaned_name:
+                return cleaned_name
 
         return None
 
@@ -192,37 +315,80 @@ def open_image_file(file_path: str) -> None:
         is_emd_file = file_path.lower().endswith('.emd')
         
         if is_emd_file:
-            # Group 2D signals as elemental maps
-            primary_signal = None
-            elemental_maps = []
-            
+            two_d_signals: List[Any] = []
             for sig in signals:
                 try:
-                    # Check if 2D signal with no navigation
-                    if (hasattr(sig, 'axes_manager') and 
-                        sig.axes_manager.signal_dimension == 2 and
-                        sig.axes_manager.navigation_dimension == 0):
-                        # Extract element name if available
-                        element_name = _extract_element_name(sig)
-                        if element_name is None:
-                            # Fall back to last part of signal title
-                            meta = getattr(sig, "metadata", None) or {}
-                            if isinstance(meta, dict):
-                                general_meta = meta.get("General", {})
-                                if isinstance(general_meta, dict):
-                                    title = general_meta.get("title", "")
-                                    element_name = title if title else f"Element_{len(elemental_maps)}"
-                            else:
-                                element_name = f"Element_{len(elemental_maps)}"
-                        
-                        if primary_signal is None:
-                            primary_signal = sig
-                        else:
-                            elemental_maps.append((element_name, sig))
+                    if (
+                        hasattr(sig, "axes_manager")
+                        and sig.axes_manager.signal_dimension == 2
+                        and sig.axes_manager.navigation_dimension == 0
+                    ):
+                        two_d_signals.append(sig)
                 except Exception as e:
                     logger.debug(f"Error processing 2D signal for EDX: {e}")
-            
-            primary_signal, elemental_maps = (primary_signal, elemental_maps) if primary_signal else (None, [])
+
+            if two_d_signals:
+                colormix_entries = _find_colormix_selection(signals)
+
+                # Default: first 2D signal is primary image.
+                primary_signal_index = 0
+
+                # If colormix is aligned to 2D signals and has a STEM entry (e.g. HAADF),
+                # use that index as primary image.
+                if colormix_entries and len(colormix_entries) == len(two_d_signals):
+                    stem_indices = [
+                        idx
+                        for idx, entry in enumerate(colormix_entries)
+                        if bool(entry.get("stem", False))
+                    ]
+                    if stem_indices:
+                        primary_signal_index = stem_indices[0]
+
+                primary_signal = two_d_signals[primary_signal_index]
+                map_signals = list(two_d_signals)
+
+                # Build metadata-driven names by index alignment when possible.
+                metadata_names: List[str] = []
+                if colormix_entries:
+                    if len(colormix_entries) == len(two_d_signals):
+                        metadata_names = [
+                            str(entry.get("name", "")).strip()
+                            for entry in colormix_entries
+                        ]
+                    else:
+                        metadata_names = [
+                            str(entry.get("name", "")).strip()
+                            for entry in colormix_entries
+                            if str(entry.get("name", "")).strip()
+                        ]
+
+                elemental_maps = []
+                used_names: Dict[str, int] = {}
+                for idx, sig in enumerate(map_signals):
+                    base_name: Optional[str] = None
+
+                    if idx < len(metadata_names) and metadata_names[idx]:
+                        base_name = metadata_names[idx]
+                    else:
+                        base_name = _extract_element_name(sig)
+
+                    if not base_name:
+                        base_name = f"Map_{idx}"
+
+                    # Ensure unique labels so map dictionary keys do not collide.
+                    count = used_names.get(base_name, 0) + 1
+                    used_names[base_name] = count
+                    label = base_name if count == 1 else f"{base_name} ({count})"
+
+                    elemental_maps.append((label, sig))
+
+                logger.debug(
+                    "Resolved EDX labels for %d map(s): %s",
+                    len(elemental_maps),
+                    [name for name, _ in elemental_maps],
+                )
+            else:
+                primary_signal, elemental_maps = None, []
         else:
             # For non-.emd files, use original detection logic
             primary_signal, elemental_maps = _detect_edx_dataset(signals)

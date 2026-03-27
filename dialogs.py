@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pyqtgraph as pg
@@ -403,8 +403,9 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         self,
         title: str,
         distances: np.ndarray,
-        intensities: np.ndarray,
+        intensities: np.ndarray | Dict[str, np.ndarray],
         x_axis_label: str = "Distance (px)",
+        trace_colors: Optional[Dict[str, Any]] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         """Initialize the line profile plotting window.
@@ -412,8 +413,10 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         Args:
             title: Window title.
             distances: Sample positions along the measured line.
-            intensities: Intensity values at each sample position.
+            intensities: Intensity values at each sample position, or mapping of
+                trace name -> intensity values.
             x_axis_label: Label for the X axis.
+            trace_colors: Optional mapping of trace name to pyqtgraph-compatible color.
             parent: Optional parent widget.
         """
         super().__init__(parent)
@@ -429,7 +432,24 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self.plot_widget.setLabel("bottom", x_axis_label)
         self.plot_widget.setLabel("left", "Intensity")
-        self.plot_widget.plot(distances, intensities, pen=pg.mkPen("b", width=2))
+        if isinstance(intensities, dict):
+            if intensities:
+                self.plot_widget.addLegend(offset=(10, 10))
+            fallback_colors = ["r", "g", "b", "m", "c", "y", "k"]
+            for idx, (trace_name, trace_values) in enumerate(intensities.items()):
+                color = None
+                if trace_colors is not None:
+                    color = trace_colors.get(trace_name)
+                if color is None:
+                    color = fallback_colors[idx % len(fallback_colors)]
+                self.plot_widget.plot(
+                    distances,
+                    trace_values,
+                    pen=pg.mkPen(color, width=2),
+                    name=str(trace_name),
+                )
+        else:
+            self.plot_widget.plot(distances, intensities, pen=pg.mkPen("b", width=2))
         layout.addWidget(self.plot_widget)
 
         logger.debug(

@@ -29,6 +29,18 @@ class _SpectrumAnalysisManagerOwner(Protocol):
     view_mode: str
     is_reciprocal_space: bool
 
+    def _update_image_display(self) -> None:
+        """Refresh the main image display."""
+        ...
+
+    def _update_edx_legend_overlay(self) -> None:
+        """Refresh the EDX legend overlay."""
+        ...
+
+    def edx_manager_start_region_selection(self) -> None:
+        """Enter EDX integration region selection mode."""
+        ...
+
     def _get_original_metadata_dict_from_signal(self, signal: Any) -> Dict[str, Any]:
         """Get original metadata from signal."""
         ...
@@ -73,9 +85,6 @@ class SpectrumAnalysisManager:
         self.element_colors: Dict[str, Tuple[int, int, int]] = {}  # element -> (R, G, B)
         self.spectrum_colors: Dict[str, Tuple[int, int, int]] = {}  # spectrum -> (R, G, B)
         
-        # Display mode state
-        self.display_mode: str = "spectra_only"  # "spectra_only" | "maps_only" | "color_mix_composite"
-        
         # Integration region state
         self.integration_regions: List[Dict[str, Any]] = []  # list of region definitions
         self.region_count: int = 0
@@ -96,6 +105,9 @@ class SpectrumAnalysisManager:
         self.spectrum_plot: Optional[pg.PlotItem] = None
         self.maps_list: Optional[QtWidgets.QListWidget] = None
         self.results_table: Optional[QtWidgets.QTableWidget] = None
+        self.element_checkboxes: Dict[str, QtWidgets.QCheckBox] = {}
+        self.element_name_labels: Dict[str, QtWidgets.QLabel] = {}
+        self.element_color_buttons: Dict[str, QtWidgets.QPushButton] = {}
         
         self._has_edx_data = False
 
@@ -577,54 +589,41 @@ class SpectrumAnalysisManager:
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
 
-        # Display mode selector
-        mode_group = QtWidgets.QGroupBox("Display Mode")
-        mode_layout = QtWidgets.QHBoxLayout()
-
-        mode_single = QtWidgets.QRadioButton("Single Map")
-        mode_composite = QtWidgets.QRadioButton("Color Mix")
-        mode_composite.setChecked(self.display_mode == "color_mix_composite")
-        mode_single.setChecked(self.display_mode != "color_mix_composite")
-
-        mode_single.toggled.connect(
-            lambda checked: self._on_display_mode_changed("maps_only")
-            if checked
-            else None
-        )
-        mode_composite.toggled.connect(
-            lambda checked: self._on_display_mode_changed("color_mix_composite")
-            if checked
-            else None
-        )
-
-        mode_layout.addWidget(mode_single)
-        mode_layout.addWidget(mode_composite)
-        mode_layout.addStretch()
-        mode_group.setLayout(mode_layout)
-        layout.addWidget(mode_group)
-
         # Element/map selector with color pickers
         maps_list_group = QtWidgets.QGroupBox("Elemental Maps")
         maps_list_layout = QtWidgets.QVBoxLayout()
+        self.element_checkboxes.clear()
+        self.element_name_labels.clear()
+        self.element_color_buttons.clear()
 
         for element_name in self.elemental_maps.keys():
             row_layout = QtWidgets.QHBoxLayout()
 
             # Checkbox for visibility
-            checkbox = QtWidgets.QCheckBox(element_name)
+            checkbox = QtWidgets.QCheckBox()
             checkbox.setToolTip(f"Toggle {element_name} map display")
             checkbox.stateChanged.connect(
                 lambda state, elem=element_name: self._on_element_checkbox_changed(
                     elem, state
                 )
             )
+            self.element_checkboxes[element_name] = checkbox
             row_layout.addWidget(checkbox)
+
+            element_label = QtWidgets.QLabel(element_name)
+            self.element_name_labels[element_name] = element_label
+            self._set_label_color(
+                element_label,
+                self.element_colors.get(element_name, (255, 255, 255)),
+            )
+            row_layout.addWidget(element_label)
 
             # Color picker button
             color = self.element_colors.get(element_name, (255, 255, 255))
             color_btn = QtWidgets.QPushButton("")
             color_btn.setMaximumWidth(50)
             self._set_button_color(color_btn, color)
+            self.element_color_buttons[element_name] = color_btn
             color_btn.clicked.connect(
                 lambda checked=False, elem=element_name: self._on_color_picker_clicked(
                     elem
@@ -691,6 +690,17 @@ class SpectrumAnalysisManager:
         hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
         button.setStyleSheet(f"background-color: {hex_color};")
 
+    @staticmethod
+    def _set_label_color(label: QtWidgets.QLabel, rgb: Tuple[int, int, int]) -> None:
+        """Set label text color based on RGB tuple.
+
+        Args:
+            label: Label to update.
+            rgb: (R, G, B) tuple with values 0-255.
+        """
+        hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+        label.setStyleSheet(f"color: {hex_color}; font-weight: 600;")
+
     def _on_spectrum_checkbox_changed(self, spectrum_name: str, state: int) -> None:
         """Handle spectrum visibility toggle.
 
@@ -717,19 +727,8 @@ class SpectrumAnalysisManager:
             self.active_elements.discard(element)
         self.logger.debug(f"Active elements: {self.active_elements}")
         self._cached_composite_needs_update = True
-        # Trigger image update in parent viewer
-        if hasattr(self.viewer, "_update_image_display"):
-            self.viewer._update_image_display()
-
-    def _on_display_mode_changed(self, mode: str) -> None:
-        """Handle display mode change.
-
-        Args:
-            mode: Display mode identifier.
-        """
-        self.display_mode = mode
-        self.logger.debug(f"Display mode changed to: {mode}")
-        self._cached_composite_needs_update = True
+        if hasattr(self.viewer, "_update_edx_legend_overlay"):
+            self.viewer._update_edx_legend_overlay()
         # Trigger image update in parent viewer
         if hasattr(self.viewer, "_update_image_display"):
             self.viewer._update_image_display()
@@ -751,8 +750,16 @@ class SpectrumAnalysisManager:
         if color.isValid():
             rgb = (color.red(), color.green(), color.blue())
             self.element_colors[element] = rgb
+            button = self.element_color_buttons.get(element)
+            if button is not None:
+                self._set_button_color(button, rgb)
+            label = self.element_name_labels.get(element)
+            if label is not None:
+                self._set_label_color(label, rgb)
             self.logger.debug(f"Color changed for {element}: {rgb}")
             self._cached_composite_needs_update = True
+            if hasattr(self.viewer, "_update_edx_legend_overlay"):
+                self.viewer._update_edx_legend_overlay()
             # Trigger image update and update button color
             if hasattr(self.viewer, "_update_image_display"):
                 self.viewer._update_image_display()

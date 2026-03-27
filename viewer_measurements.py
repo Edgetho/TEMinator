@@ -45,6 +45,7 @@ class _MeasurementControllerOwner(Protocol):
     selected_measurement_index: int | None
     measurement_history_window: MeasurementHistoryWindow | None
     freq_axis_base_unit: str
+    edx_manager: Any
 
     def _prepare_for_measurement_input(self) -> None:
         """Prepare the viewer for measurement input."""
@@ -521,11 +522,19 @@ class MeasurementController:
 
         distances = record.get("distances")
         intensities = record.get("intensities")
+        trace_colors = record.get("trace_colors")
         x_axis_label = str(record.get("x_axis_label", "Distance (px)"))
         title = str(record.get("title", f"Profile Measurement #{entry_id}"))
-        if not isinstance(distances, np.ndarray) or not isinstance(
-            intensities, np.ndarray
-        ):
+        if not isinstance(distances, np.ndarray):
+            self.logger.debug(
+                "Open profile failed: profile distances missing for id=%s", entry_id
+            )
+            return
+
+        valid_intensities = isinstance(intensities, np.ndarray) or isinstance(
+            intensities, dict
+        )
+        if not valid_intensities:
             self.logger.debug(
                 "Open profile failed: profile data missing for id=%s", entry_id
             )
@@ -536,6 +545,7 @@ class MeasurementController:
             distances,
             intensities,
             x_axis_label=x_axis_label,
+            trace_colors=trace_colors if isinstance(trace_colors, dict) else None,
             parent=viewer,
         )
         profile_window.show()
@@ -792,7 +802,7 @@ class MeasurementController:
             )
             return
 
-        distances, intensities, line_item, x_axis_label = profile
+        distances, intensities, line_item, x_axis_label, trace_colors = profile
         viewer.profile_measurement_count += 1
         profile_id = viewer.profile_measurement_count
         line_label = f"P#{profile_id} profile ({len(distances)} pts)"
@@ -814,6 +824,7 @@ class MeasurementController:
             distances,
             intensities,
             x_axis_label=x_axis_label,
+            trace_colors=trace_colors,
             parent=viewer,
         )
         profile_window.show()
@@ -826,6 +837,7 @@ class MeasurementController:
             "window": profile_window,
             "distances": distances,
             "intensities": intensities,
+            "trace_colors": trace_colors,
             "title": f"Profile Measurement #{profile_id}",
             "history_text": line_label,
             "x_axis_label": x_axis_label,
@@ -847,7 +859,13 @@ class MeasurementController:
         self,
         p1: Tuple[float, float],
         p2: Tuple[float, float],
-    ) -> tuple[np.ndarray, np.ndarray, pg.PlotDataItem, str] | None:
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray | Dict[str, np.ndarray],
+        pg.PlotDataItem,
+        str,
+        Dict[str, Any] | None,
+    ] | None:
         """Extract intensity values along a line in the image.
 
         Samples pixel intensities using bilinear interpolation along a line
@@ -957,7 +975,51 @@ class MeasurementController:
             height=height,
         )
 
-        intensities = self._sample_image_bilinear(image, xs_clipped, ys_clipped)
+        intensities: np.ndarray | Dict[str, np.ndarray] = self._sample_image_bilinear(
+            image, xs_clipped, ys_clipped
+        )
+        trace_colors: Dict[str, Any] | None = None
+
+        if (
+            viewer.view_mode == "image"
+            and hasattr(viewer, "edx_manager")
+            and viewer.edx_manager.get_has_edx_data()
+            and viewer.edx_manager.active_elements
+        ):
+            active_profiles: Dict[str, np.ndarray] = {}
+            active_colors: Dict[str, Any] = {}
+
+            for element_name in viewer.edx_manager.elemental_maps.keys():
+                if element_name not in viewer.edx_manager.active_elements:
+                    continue
+
+                map_data = viewer.edx_manager.elemental_maps.get(element_name)
+                if map_data is None and hasattr(viewer.edx_manager, "_load_elemental_map"):
+                    if viewer.edx_manager._load_elemental_map(element_name):
+                        map_data = viewer.edx_manager.elemental_maps.get(element_name)
+
+                if map_data is None:
+                    continue
+
+                map_image = np.asarray(map_data, dtype=float)
+                if map_image.ndim != 2 or map_image.shape != image.shape:
+                    continue
+
+                active_profiles[element_name] = self._sample_image_bilinear(
+                    map_image, xs_clipped, ys_clipped
+                )
+                active_colors[element_name] = viewer.edx_manager.element_colors.get(
+                    element_name
+                )
+
+            if active_profiles:
+                intensities = active_profiles
+                trace_colors = active_colors
+                self.logger.debug(
+                    "Profile extracted with per-element traces: elements=%s samples=%s",
+                    list(active_profiles.keys()),
+                    sample_count,
+                )
         distances_px = line_profile_logic.pixel_distance_axis(xs_clipped, ys_clipped)
 
         axis_unit = line_profile_logic.resolve_profile_axis_unit(
@@ -1016,7 +1078,7 @@ class MeasurementController:
             y1,
             sample_count,
         )
-        return distances, intensities, line_item, x_axis_label
+        return distances, intensities, line_item, x_axis_label, trace_colors
 
     @staticmethod
     def _sample_image_bilinear(

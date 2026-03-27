@@ -37,7 +37,7 @@ from measurement_tools import (
     MeasurementLabel,
 )
 from menu_manager import MenuBuilder, build_menu_config_for_role
-from scale_bars import DynamicScaleBar
+from scale_bars import DynamicLegendBox, DynamicScaleBar
 from utils import (
     HelpDialogActions,
     open_file_dialog,
@@ -120,6 +120,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.inverse_fft_count = 0
         self.selected_inverse_fft_box: Optional[pg.RectROI] = None
         self.scale_bar: Optional[DynamicScaleBar] = None
+        self.edx_legend: Optional[DynamicLegendBox] = None
         self.measurement_history_window: Optional[MeasurementHistoryWindow] = None
         self.metadata_window: Optional[MetadataWindow] = None
         self.measurement_count = 0
@@ -989,6 +990,56 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Scale bar calibration tag refreshed: status=%s", self._calibration_status
         )
 
+    def _ensure_edx_legend_overlay(self) -> None:
+        """Create the bottom-right EDX legend overlay when EDX maps exist."""
+        if self.view_mode != "image" or self.p1 is None:
+            return
+
+        if not (
+            hasattr(self, "edx_manager") and self.edx_manager.get_has_edx_data()
+        ):
+            if self.edx_legend is not None:
+                self.edx_legend.set_entries([])
+            return
+
+        if self.edx_legend is None:
+            self.edx_legend = DynamicLegendBox(self.p1.vb)
+
+    def _update_edx_legend_overlay(self) -> None:
+        """Refresh EDX legend entries from selected maps and their colors."""
+        if self.view_mode != "image":
+            return
+
+        self._ensure_edx_legend_overlay()
+        if self.edx_legend is None:
+            return
+
+        active_names: List[str] = []
+        if hasattr(self, "edx_manager") and self.edx_manager.get_has_edx_data():
+            active_names = [
+                name
+                for name in self.edx_manager.elemental_maps.keys()
+                if name in self.edx_manager.active_elements
+            ]
+
+        entries = [
+            (name, self.edx_manager.element_colors.get(name, (255, 255, 255)))
+            for name in active_names
+        ]
+        self.edx_legend.set_entries(entries)
+
+    def _blank_edx_display_image(self) -> np.ndarray:
+        """Return a blank frame matching the current EDX map/image shape."""
+        if isinstance(self.data, np.ndarray) and self.data.ndim >= 2:
+            return np.zeros(self.data.shape[:2], dtype=np.float32)
+
+        if hasattr(self, "edx_manager"):
+            for map_data in self.edx_manager.elemental_maps.values():
+                if isinstance(map_data, np.ndarray) and map_data.ndim >= 2:
+                    return np.zeros(map_data.shape[:2], dtype=np.float32)
+
+        return np.zeros((1, 1), dtype=np.float32)
+
     def _detect_reciprocal_space(self, signal) -> bool:
         """Determine if the signal should be treated as reciprocal space.
 
@@ -1212,6 +1263,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                     pass
 
             self._refresh_scale_bar_calibration_tag()
+            self._ensure_edx_legend_overlay()
+            self._update_edx_legend_overlay()
 
         self.line_tool = LineDrawingTool(
             self.p1,
@@ -1397,18 +1450,21 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if self.display_min is None or self.display_max is None:
             self._init_display_window()
 
-        # EDX color-mix composite rendering
+        # EDX checkbox-driven map rendering
         if (
-            hasattr(self, "edx_manager")
+            self.view_mode == "image"
+            and hasattr(self, "edx_manager")
             and self.edx_manager.get_has_edx_data()
-            and self.edx_manager.display_mode == "color_mix_composite"
-            and self.edx_manager.active_elements
         ):
-            composite_map = self.edx_manager.render_composite_map()
-            if composite_map is not None:
-                # Composite is already uint8 (0-255), normalize to [0, 1]
-                display_data = composite_map.astype(np.float32) / 255.0
-                self._set_display_image(display_data)
+            self._update_edx_legend_overlay()
+            if self.edx_manager.active_elements:
+                composite_map = self.edx_manager.render_composite_map()
+                if composite_map is not None:
+                    display_data = composite_map.astype(np.float32) / 255.0
+                    self._set_display_image(display_data)
+                    return
+            else:
+                self._set_display_image(self._blank_edx_display_image())
                 return
 
         if self.view_mode == "fft":
@@ -1789,8 +1845,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Cycle Colormap Forward": self._cycle_colormap_forward,
             "Cycle Colormap Backward": self._cycle_colormap_backward,
             "Toggle Spectra Panel": self._edx_toggle_panel,
-            "Color Mix Mode": self._edx_set_color_mix_mode,
-            "Single Map Mode": self._edx_set_single_map_mode,
             "Select Integration Region": self._edx_start_region_selection,
             "Export EDS Results": self._edx_export_results,
             "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
@@ -1971,22 +2025,6 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if self.edx_manager.edx_panel:
             visible = self.edx_manager.edx_panel.isVisible()
             self.edx_manager.edx_panel.setVisible(not visible)
-
-    def _edx_set_color_mix_mode(self) -> None:
-        """Set EDX display mode to color mix composite."""
-        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
-            return
-        logger.debug("EDX menu action: color mix mode")
-        self.edx_manager.display_mode = "color_mix_composite"
-        self._update_image_display()
-
-    def _edx_set_single_map_mode(self) -> None:
-        """Set EDX display mode to single map."""
-        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
-            return
-        logger.debug("EDX menu action: single map mode")
-        self.edx_manager.display_mode = "maps_only"
-        self._update_image_display()
 
     def _edx_start_region_selection(self) -> None:
         """Start EDX integration region selection."""
