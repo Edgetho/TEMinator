@@ -46,6 +46,7 @@ from utils import (
 from viewer_commands import (
     ViewerCommandRouter,
 )
+from viewer_edx import SpectrumAnalysisManager
 from viewer_fft import FFTWindowManager
 from viewer_measurements import MeasurementController
 from viewer_settings import (
@@ -78,6 +79,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         fft_region: Optional[np.ndarray] = None,
         fft_name: Optional[str] = None,
         parent_image_window: Optional["ImageViewerWindow"] = None,
+        elemental_map_signals: Optional[List[Tuple[str, Any]]] = None,
     ):
         """Initialize an image viewer window for displaying TEM images and measurements.
 
@@ -90,6 +92,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             fft_region: Optional array specifying FFT region for inverse FFT windows.
             fft_name: Optional name/label for FFT windows.
             parent_image_window: Reference to parent viewer for FFT/inverse FFT relationships.
+            elemental_map_signals: Optional list of (element_name, signal) tuples for EDX elemental maps.
         """
         super().__init__()
         self.setAcceptDrops(True)
@@ -148,6 +151,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         self.fft_name = fft_name
         self.parent_image_window = parent_image_window
+        self.elemental_map_signals: Optional[List[Tuple[str, Any]]] = elemental_map_signals
         self._magnitude_spectrum = None
         self._fft_complex = None
         self._inverse_fft_cache = None
@@ -170,6 +174,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._display_image_full_res: Optional[np.ndarray] = None
         self.measurements = MeasurementController(self, logger)
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
+        self.edx_manager = SpectrumAnalysisManager(self, logger)
         self.commands = ViewerCommandRouter(self, logger)
         self._command_mode = CommandModeController(
             command_edit_getter=lambda: self.command_edit,
@@ -312,6 +317,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             title = f"Image Viewer - {file_name}"
         self._set_base_window_title(title)
 
+        # Load EDX data BEFORE setup_ui so menu items can be properly configured
+        self.edx_manager.detect_and_load_edx_data(elemental_map_signals=self.elemental_map_signals)
         self.setup_ui()
         self.resize(*DEFAULT_IMAGE_WINDOW_SIZE)
 
@@ -1088,7 +1095,25 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if hasattr(self.glw.ci, "layout"):
             self.glw.ci.layout.setContentsMargins(0, 0, 0, 0)
             self.glw.ci.layout.setSpacing(0)
-        main_layout.addWidget(self.glw)
+
+        # Create layout with EDX panel if available
+        if (
+            hasattr(self, "edx_manager")
+            and self.edx_manager.get_has_edx_data()
+            and self.view_mode == "image"
+        ):
+            edx_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+            edx_splitter.addWidget(self.glw)
+
+            edx_panel = self.edx_manager.build_edx_panel()
+            if edx_panel:
+                edx_splitter.addWidget(edx_panel)
+                edx_splitter.setStretchFactor(0, 3)
+                edx_splitter.setStretchFactor(1, 1)
+
+            main_layout.addWidget(edx_splitter)
+        else:
+            main_layout.addWidget(self.glw)
 
         # Hidden command line at the bottom, shown when ':' is pressed
         self.command_edit = QtWidgets.QLineEdit()
@@ -1371,6 +1396,20 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         if self.display_min is None or self.display_max is None:
             self._init_display_window()
+
+        # EDX color-mix composite rendering
+        if (
+            hasattr(self, "edx_manager")
+            and self.edx_manager.get_has_edx_data()
+            and self.edx_manager.display_mode == "color_mix_composite"
+            and self.edx_manager.active_elements
+        ):
+            composite_map = self.edx_manager.render_composite_map()
+            if composite_map is not None:
+                # Composite is already uint8 (0-255), normalize to [0, 1]
+                display_data = composite_map.astype(np.float32) / 255.0
+                self._set_display_image(display_data)
+                return
 
         if self.view_mode == "fft":
             if self._magnitude_spectrum is None:
@@ -1730,31 +1769,38 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
     def _setup_menu_bar(self) -> None:
         """Create and wire the menu bar for image-viewer actions."""
+        callbacks_map = {
+            "Open": self._open_file_dialog,
+            "Save View": self._save_view_and_ffts,
+            "Build Figure": lambda: self._show_not_implemented("Build Figure"),
+            "Calibrate": self._open_calibration_dialog,
+            "Parameters": self._open_parameters_dialog,
+            "FFT": lambda _checked=False: self.fft_manager.add_new_fft(),
+            "Inverse FFT": lambda _checked=False: (
+                self.fft_manager.add_new_inverse_fft()
+            ),
+            "Adjust": self._open_adjust_dialog,
+            "Distance": self._menu_start_distance_measurement,
+            "History": self.measurements.show_measurement_history,
+            "Intensity": lambda: self._show_not_implemented("Intensity"),
+            "Profile": self._menu_start_profile_measurement,
+            "Metadata": self._show_metadata_window,
+            "Render Diagnostics": self._show_render_diagnostics,
+            "Cycle Colormap Forward": self._cycle_colormap_forward,
+            "Cycle Colormap Backward": self._cycle_colormap_backward,
+            "Toggle Spectra Panel": self._edx_toggle_panel,
+            "Color Mix Mode": self._edx_set_color_mix_mode,
+            "Single Map Mode": self._edx_set_single_map_mode,
+            "Select Integration Region": self._edx_start_region_selection,
+            "Export EDS Results": self._edx_export_results,
+            "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
+            "About": self.help_actions.show_about,
+            "README": self.help_actions.show_readme,
+        }
+
         config = build_menu_config_for_role(
             role="viewer",
-            callbacks_map={
-                "Open": self._open_file_dialog,
-                "Save View": self._save_view_and_ffts,
-                "Build Figure": lambda: self._show_not_implemented("Build Figure"),
-                "Calibrate": self._open_calibration_dialog,
-                "Parameters": self._open_parameters_dialog,
-                "FFT": lambda _checked=False: self.fft_manager.add_new_fft(),
-                "Inverse FFT": lambda _checked=False: (
-                    self.fft_manager.add_new_inverse_fft()
-                ),
-                "Adjust": self._open_adjust_dialog,
-                "Distance": self._menu_start_distance_measurement,
-                "History": self.measurements.show_measurement_history,
-                "Intensity": lambda: self._show_not_implemented("Intensity"),
-                "Profile": self._menu_start_profile_measurement,
-                "Metadata": self._show_metadata_window,
-                "Render Diagnostics": self._show_render_diagnostics,
-                "Cycle Colormap Forward": self._cycle_colormap_forward,
-                "Cycle Colormap Backward": self._cycle_colormap_backward,
-                "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
-                "About": self.help_actions.show_about,
-                "README": self.help_actions.show_readme,
-            },
+            callbacks_map=callbacks_map,
         )
 
         # Determine if an image is available for this viewer
@@ -1767,9 +1813,19 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         else:
             image_available = False
 
+        # Determine if EDX data is available
+        edx_available = (
+            hasattr(self, "edx_manager") 
+            and self.edx_manager.get_has_edx_data()
+        )
+
         # Build menus using the builder
         self.menu_builder = MenuBuilder(self, logger)
-        self.menu_builder.build_from_config(config, image_available=image_available)
+        self.menu_builder.build_from_config(
+            config, 
+            image_available=image_available,
+            edx_available=edx_available,
+        )
 
         # Add Colormap submenu with individual colormap options to the Display menu
         if "Display" in self.menu_builder.menus:
@@ -1905,6 +1961,46 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         """Handle menu action that starts profile measurement mode."""
         logger.debug("Menu action: start profile measurement")
         self.measurements.start_profile_measurement()
+
+    # EDS menu callbacks
+    def _edx_toggle_panel(self) -> None:
+        """Toggle EDX panel visibility."""
+        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
+            return
+        logger.debug("EDX menu action: toggle panel")
+        if self.edx_manager.edx_panel:
+            visible = self.edx_manager.edx_panel.isVisible()
+            self.edx_manager.edx_panel.setVisible(not visible)
+
+    def _edx_set_color_mix_mode(self) -> None:
+        """Set EDX display mode to color mix composite."""
+        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
+            return
+        logger.debug("EDX menu action: color mix mode")
+        self.edx_manager.display_mode = "color_mix_composite"
+        self._update_image_display()
+
+    def _edx_set_single_map_mode(self) -> None:
+        """Set EDX display mode to single map."""
+        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
+            return
+        logger.debug("EDX menu action: single map mode")
+        self.edx_manager.display_mode = "maps_only"
+        self._update_image_display()
+
+    def _edx_start_region_selection(self) -> None:
+        """Start EDX integration region selection."""
+        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
+            return
+        logger.debug("EDX menu action: start region selection")
+        self.edx_manager._on_select_region_clicked()
+
+    def _edx_export_results(self) -> None:
+        """Export EDX integration results."""
+        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
+            return
+        logger.debug("EDX menu action: export results")
+        self.edx_manager._on_export_results_clicked()
 
     def _iter_transform_windows_recursive(self):
         """Yield all descendant FFT/iFFT windows for this image file."""

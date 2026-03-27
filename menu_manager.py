@@ -27,8 +27,8 @@ class MenuItemConfig:
         shortcut: Keyboard shortcut (e.g., "Ctrl+O"), empty string for none
         callback: Function to call when item is triggered
         is_implemented: Whether this feature is fully implemented
-        requires_image: Whether this requires an active image to be useful.
-                       Can be a boolean or a callable that takes (image_available) and returns bool
+        requires_image: Whether this requires an active image to be useful
+        requires_edx: Whether this requires EDX data to be available
         menu_path: Menu path like "File" or "Display"
     """
 
@@ -36,7 +36,8 @@ class MenuItemConfig:
     shortcut: str
     callback: Callable
     is_implemented: bool = True
-    requires_image: bool | Callable = False
+    requires_image: bool = False
+    requires_edx: bool = False
     menu_path: str = ""
 
 
@@ -103,6 +104,7 @@ class MenuBuilder:
         self,
         config: List[MenuItemConfig],
         image_available: bool = False,
+        edx_available: bool = False,
     ) -> Dict[str, QtWidgets.QAction]:
         """Build menus from a list of MenuItemConfigs.
 
@@ -112,10 +114,12 @@ class MenuBuilder:
         3. Adds items with proper enabled/disabled state based on:
            - Whether the item is implemented
            - Whether an image is available (if required)
+           - Whether EDX data is available (if required)
 
         Args:
             config: List of MenuItemConfig items
             image_available: Whether an active image is available
+            edx_available: Whether EDX data is available
 
         Returns:
             Dictionary of all created actions, keyed by menu path and title
@@ -139,7 +143,8 @@ class MenuBuilder:
             for item in items:
                 # Determine if item should be enabled
                 is_enabled = item.is_implemented and (
-                    not item.requires_image or image_available
+                    (not item.requires_image or image_available) and
+                    (not item.requires_edx or edx_available)
                 )
 
                 action = self.add_menu_item(
@@ -153,11 +158,12 @@ class MenuBuilder:
                 created_actions[f"{menu_name}::{item.title}"] = action
 
                 if not is_enabled:
-                    reason = (
-                        "not implemented"
-                        if not item.is_implemented
-                        else "requires active image"
-                    )
+                    if not item.is_implemented:
+                        reason = "not implemented"
+                    elif item.requires_edx and not edx_available:
+                        reason = "requires EDX data"
+                    else:
+                        reason = "requires active image"
                     self.logger.debug(f"Disabled menu item '{item.title}' ({reason})")
 
         return created_actions
@@ -333,6 +339,52 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             is_implemented=True,
             requires_image=True,
             menu_path="Display",
+        ),
+        # EDS menu
+        MenuItemConfig(
+            title="Toggle Spectra Panel",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Color Mix Mode",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Single Map Mode",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Select Integration Region",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Export EDS Results",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
         ),
         # Help menu
         MenuItemConfig(
