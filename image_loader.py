@@ -33,36 +33,41 @@ def open_image_file(file_path: str) -> None:
         logger.debug("Loaded %d signal(s) from %s", len(signals), file_path)
 
         for sig_index, signal in enumerate(signals):
-            if signal.axes_manager.navigation_dimension == 0:
-                suffix = f"[{sig_index}]" if len(signals) > 1 else None
-                window = ImageViewerWindow(
-                    file_path, signal=signal, window_suffix=suffix
-                )
-                window.show()
-                logger.debug(
-                    "Opened viewer for signal index %s suffix=%s", sig_index, suffix
-                )
-            else:
-                nav_shape = signal.axes_manager.navigation_shape
-                for nav_index in np.ndindex(nav_shape):
-                    sub_signal = signal.inav[nav_index]
-                    idx_str = ",".join(str(i) for i in nav_index)
-                    if len(signals) > 1:
-                        suffix = f"[{sig_index}; {idx_str}]"
-                    else:
-                        suffix = f"[{idx_str}]"
+            try:
+                if signal.axes_manager.navigation_dimension == 0:
+                    suffix = f"[{sig_index}]" if len(signals) > 1 else None
                     window = ImageViewerWindow(
-                        file_path,
-                        signal=sub_signal,
-                        window_suffix=suffix,
+                        file_path, signal=signal, window_suffix=suffix
                     )
                     window.show()
                     logger.debug(
-                        "Opened viewer for signal index %s navigation index %s suffix=%s",
-                        sig_index,
-                        nav_index,
-                        suffix,
+                        "Opened viewer for signal index %s suffix=%s", sig_index, suffix
                     )
+                else:
+                    nav_shape = signal.axes_manager.navigation_shape
+                    for nav_index in np.ndindex(nav_shape):
+                        sub_signal = signal.inav[nav_index]
+                        idx_str = ",".join(str(i) for i in nav_index)
+                        if len(signals) > 1:
+                            suffix = f"[{sig_index}; {idx_str}]"
+                        else:
+                            suffix = f"[{idx_str}]"
+                        window = ImageViewerWindow(
+                            file_path,
+                            signal=sub_signal,
+                            window_suffix=suffix,
+                        )
+                        window.show()
+                        logger.debug(
+                            "Opened viewer for signal index %s navigation index %s suffix=%s",
+                            sig_index,
+                            nav_index,
+                            suffix,
+                        )
+            except Exception as e:
+                logger.exception(
+                    f"Could not open signal {sig_index} from {file_path}; {type(e).__name__}."
+                )
 
     except Exception as exc:
         logger.exception("Could not open file: %s", file_path)
