@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import csv
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, Tuple
 
 import numpy as np
@@ -16,7 +19,12 @@ import line_profile_logic
 import unit_utils
 import utils
 from dialogs import LineProfileWindow, MeasurementHistoryWindow
-from measurement_tools import DRAWN_LINE_PEN, LABEL_BRUSH_COLOR, MeasurementLabel
+from measurement_tools import (
+    DRAWN_LINE_PEN,
+    LABEL_BRUSH_COLOR,
+    MeasurementLabel,
+    PointSelectionTool,
+)
 from types_common import LoggerLike
 
 
@@ -45,6 +53,7 @@ class _MeasurementControllerOwner(Protocol):
     selected_measurement_index: int | None
     measurement_history_window: MeasurementHistoryWindow | None
     freq_axis_base_unit: str
+    file_path: str
 
     def _prepare_for_measurement_input(self) -> None:
         """Prepare the viewer for measurement input."""
@@ -80,6 +89,60 @@ class MeasurementController:
         """
         self.viewer = viewer
         self.logger = logger
+        self._peak_tool: PointSelectionTool | None = None
+        self._peak_points: list[dict[str, float]] = []
+        self._peak_markers: list[tuple[pg.ScatterPlotItem, pg.TextItem]] = []
+
+    def _ensure_peak_tool(self) -> PointSelectionTool | None:
+        """Create the point-selection tool on first use."""
+        viewer = self.viewer
+        if self._peak_tool is not None:
+            return self._peak_tool
+        if viewer.p1 is None:
+            return None
+        self._peak_tool = PointSelectionTool(viewer.p1, self.on_peak_selected)
+        return self._peak_tool
+
+    def _disable_peak_selection(self) -> None:
+        """Disable peak selection mode without clearing selected peaks."""
+        if self._peak_tool is not None and self._peak_tool.is_enabled:
+            self._peak_tool.disable()
+
+    def start_peak_selection(self) -> None:
+        """Enable interactive peak picking by clicking points on the image."""
+        viewer = self.viewer
+        peak_tool = self._ensure_peak_tool()
+        if peak_tool is None:
+            self.logger.debug("Peak selection requested but plot is unavailable")
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Peak Selection",
+                "Peak selection is not available for this view.",
+            )
+            return
+
+        viewer._prepare_for_measurement_input()
+        viewer._line_draw_mode = "peaks"
+        viewer._on_calibration_pixels_selected = None
+
+        if viewer.btn_measure is not None:
+            viewer.btn_measure.blockSignals(True)
+            viewer.btn_measure.setChecked(False)
+            viewer.btn_measure.blockSignals(False)
+            viewer.btn_measure.setStyleSheet("")
+
+        if viewer.line_tool is not None:
+            viewer.line_tool.disable()
+
+        peak_tool.enable()
+        viewer._on_measurement_drawing_state_changed(False)
+        self.logger.debug("Peak selection mode enabled")
+
+        QtWidgets.QMessageBox.information(
+            viewer,
+            "Peak Selection",
+            "Click to add peak markers. Use Measure → Export Peaks CSV when done.",
+        )
 
     def exit_measure_mode(self) -> None:
         """Exit measurement mode and restore the line tool state.
@@ -105,6 +168,10 @@ class MeasurementController:
         if viewer.btn_measure is not None and viewer.btn_measure.isChecked():
             viewer.btn_measure.setChecked(False)
 
+        self._disable_peak_selection()
+        if viewer._line_draw_mode == "peaks":
+            viewer._line_draw_mode = "measurement"
+
         if viewer.line_tool is not None:
             viewer.line_tool.disable()
         viewer._on_measurement_drawing_state_changed(False)
@@ -122,6 +189,8 @@ class MeasurementController:
         if viewer.line_tool is None:
             self.logger.debug("Ignoring measurement toggle: line tool is unavailable")
             return
+
+        self._disable_peak_selection()
 
         if viewer.btn_measure is not None and viewer.btn_measure.isChecked():
             viewer._prepare_for_measurement_input()
@@ -167,6 +236,8 @@ class MeasurementController:
                 "Line drawing tool is not available.",
             )
             return
+
+        self._disable_peak_selection()
 
         viewer._prepare_for_measurement_input()
         viewer._line_draw_mode = "profile"
@@ -301,6 +372,235 @@ class MeasurementController:
             dist_px,
         )
 
+    def _map_view_point_to_pixel(self, point: Tuple[float, float]) -> Tuple[float, float]:
+        """Map a view-space point to image pixel coordinates."""
+        viewer = self.viewer
+        if viewer.data is None:
+            return float(point[0]), float(point[1])
+
+        image = np.asarray(viewer.data)
+        if image.ndim != 2 or image.shape[0] < 1 or image.shape[1] < 1:
+            return float(point[0]), float(point[1])
+
+        width = int(image.shape[1])
+        height = int(image.shape[0])
+
+        rect_mapping = None
+        image_item = getattr(viewer, "img_orig", None)
+        if image_item is not None and hasattr(image_item, "rect"):
+            try:
+                image_rect = image_item.rect()
+                rect_mapping = line_profile_logic.rect_mapping_from_rect(
+                    image_width=width,
+                    image_height=height,
+                    rect_left=float(image_rect.left()),
+                    rect_top=float(image_rect.top()),
+                    rect_width=float(image_rect.width()),
+                    rect_height=float(image_rect.height()),
+                )
+            except Exception:
+                rect_mapping = None
+
+        axis_calibration = None
+        if viewer.ax_x is not None and viewer.ax_y is not None:
+            try:
+                axis_calibration = line_profile_logic.AxisCalibration(
+                    scale_x=float(viewer.ax_x.scale),
+                    scale_y=float(viewer.ax_y.scale),
+                    offset_x=float(viewer.ax_x.offset),
+                    offset_y=float(viewer.ax_y.offset),
+                )
+            except Exception:
+                axis_calibration = None
+
+        mapped = line_profile_logic.map_view_points_to_pixel(
+            p1=point,
+            p2=point,
+            rect_mapping=rect_mapping,
+            axis_calibration=axis_calibration,
+        )
+        if mapped is None:
+            return float(point[0]), float(point[1])
+
+        x_px, y_px = float(mapped[0]), float(mapped[1])
+        x_px = float(np.clip(x_px, 0.0, float(width - 1)))
+        y_px = float(np.clip(y_px, 0.0, float(height - 1)))
+        return x_px, y_px
+
+    def on_peak_selected(self, point: Tuple[float, float]) -> None:
+        """Handle a newly selected peak point."""
+        viewer = self.viewer
+        x_view = float(point[0])
+        y_view = float(point[1])
+        x_px, y_px = self._map_view_point_to_pixel(point)
+
+        peak_index = len(self._peak_points) + 1
+
+        marker = pg.ScatterPlotItem(
+            [x_view],
+            [y_view],
+            symbol="o",
+            size=10,
+            pen=pg.mkPen(255, 255, 0, width=2),
+            brush=pg.mkBrush(255, 255, 0, 80),
+        )
+        viewer.p1.addItem(marker)
+
+        label = MeasurementLabel(
+            f"Pk#{peak_index}",
+            color=pg.mkColor(0, 0, 0),
+            anchor=(0, 0),
+            fill=LABEL_BRUSH_COLOR,
+        )
+        label.setPos(x_view, y_view)
+        viewer.p1.addItem(label)
+
+        self._peak_markers.append((marker, label))
+        self._peak_points.append(
+            {
+                "index": float(peak_index),
+                "x_view": x_view,
+                "y_view": y_view,
+                "x_px": x_px,
+                "y_px": y_px,
+            }
+        )
+        self.logger.debug(
+            "Peak selected: index=%s x_view=%.6g y_view=%.6g x_px=%.6g y_px=%.6g",
+            peak_index,
+            x_view,
+            y_view,
+            x_px,
+            y_px,
+        )
+
+    def clear_selected_peaks(self) -> None:
+        """Clear all selected peak markers from the view."""
+        viewer = self.viewer
+        for marker, label in self._peak_markers:
+            try:
+                viewer.p1.removeItem(marker)
+            except Exception:
+                pass
+            try:
+                viewer.p1.removeItem(label)
+            except Exception:
+                pass
+        self._peak_markers.clear()
+        self._peak_points.clear()
+        self.logger.debug("Cleared selected peaks")
+
+    def export_peaks_to_csv(self) -> None:
+        """Export selected peak coordinates and spacing metrics to CSV."""
+        viewer = self.viewer
+        if not self._peak_points:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Export Peaks CSV",
+                "No peaks selected. Use Measure → Select Peaks first.",
+            )
+            return
+
+        axis_units = (
+            str(getattr(viewer.ax_x, "units", "") or "")
+            if viewer.ax_x is not None
+            else ""
+        )
+        units_label = axis_units or "axis_units"
+
+        default_stem = Path(viewer.file_path).stem if viewer.file_path else "peaks"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"{default_stem}_peaks_{timestamp}.csv"
+        default_path = str(Path(viewer.file_path).with_name(default_name))
+
+        selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            viewer,
+            "Export Peaks CSV",
+            default_path,
+            "CSV Files (*.csv)",
+        )
+        if not selected_path:
+            return
+
+        rows: list[dict[str, Any]] = []
+        prev_peak: dict[str, float] | None = None
+        for peak in self._peak_points:
+            dx_px = dy_px = spacing_px = ""
+            dx_world = dy_world = spacing_world = ""
+
+            if prev_peak is not None:
+                dx_px_val = float(peak["x_px"] - prev_peak["x_px"])
+                dy_px_val = float(peak["y_px"] - prev_peak["y_px"])
+                spacing_px_val = float(np.hypot(dx_px_val, dy_px_val))
+                dx_world_val = float(peak["x_view"] - prev_peak["x_view"])
+                dy_world_val = float(peak["y_view"] - prev_peak["y_view"])
+                spacing_world_val = float(np.hypot(dx_world_val, dy_world_val))
+
+                dx_px = f"{dx_px_val:.12g}"
+                dy_px = f"{dy_px_val:.12g}"
+                spacing_px = f"{spacing_px_val:.12g}"
+                dx_world = f"{dx_world_val:.12g}"
+                dy_world = f"{dy_world_val:.12g}"
+                spacing_world = f"{spacing_world_val:.12g}"
+
+            rows.append(
+                {
+                    "peak_index": int(peak["index"]),
+                    "x_view": f"{peak['x_view']:.12g}",
+                    "y_view": f"{peak['y_view']:.12g}",
+                    "x_pixel": f"{peak['x_px']:.12g}",
+                    "y_pixel": f"{peak['y_px']:.12g}",
+                    "delta_x_pixels_from_previous": dx_px,
+                    "delta_y_pixels_from_previous": dy_px,
+                    "pixel_spacing_from_previous": spacing_px,
+                    "delta_x_calibrated_from_previous": dx_world,
+                    "delta_y_calibrated_from_previous": dy_world,
+                    "calibrated_distance_from_previous": spacing_world,
+                    "calibrated_distance_units": units_label,
+                }
+            )
+            prev_peak = peak
+
+        headers = [
+            "peak_index",
+            "x_view",
+            "y_view",
+            "x_pixel",
+            "y_pixel",
+            "delta_x_pixels_from_previous",
+            "delta_y_pixels_from_previous",
+            "pixel_spacing_from_previous",
+            "delta_x_calibrated_from_previous",
+            "delta_y_calibrated_from_previous",
+            "calibrated_distance_from_previous",
+            "calibrated_distance_units",
+        ]
+
+        try:
+            with open(selected_path, "w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(rows)
+        except OSError as exc:
+            self.logger.debug("Failed to export peaks CSV: %s", exc)
+            QtWidgets.QMessageBox.critical(
+                viewer,
+                "Export Peaks CSV",
+                f"Could not write CSV file:\n{exc}",
+            )
+            return
+
+        self.logger.debug(
+            "Exported peaks CSV: path=%s peaks=%s",
+            selected_path,
+            len(self._peak_points),
+        )
+        QtWidgets.QMessageBox.information(
+            viewer,
+            "Export Peaks CSV",
+            f"Exported {len(self._peak_points)} peaks to:\n{selected_path}",
+        )
+
     def on_measurement_label_clicked(self, label: pg.TextItem) -> None:
         """Handle a measurement label being clicked.
 
@@ -351,6 +651,8 @@ class MeasurementController:
 
         for profile_id in list(viewer.profile_measurement_items.keys()):
             self._delete_profile_measurement(profile_id)
+
+        self.clear_selected_peaks()
 
         viewer.selected_measurement_index = None
         self.logger.debug("Viewer overlays cleared from history request")

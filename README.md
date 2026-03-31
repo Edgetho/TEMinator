@@ -164,6 +164,8 @@ Current default shortcuts:
 | Measure | History | `H` |
 | Measure | Intensity | `I` |
 | Measure | Profile | `P` |
+| Measure | Select Peaks | `K` |
+| Measure | Export Peaks CSV | _(none)_ |
 | View | Metadata | `M` |
 | View | Cycle Colormap Forward | `+` |
 | View | Cycle Colormap Backward | `-` |

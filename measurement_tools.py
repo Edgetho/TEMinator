@@ -304,6 +304,98 @@ class LineDrawingTool:
         event.accept()
 
 
+class PointSelectionTool:
+    """Tool for selecting individual points on a plot."""
+
+    def __init__(self, plot: pg.PlotItem, on_point_selected_callback):
+        """Initialize point-selection tool state and event handler references.
+
+        Args:
+            plot: Plot item where points are selected.
+            on_point_selected_callback: Callback invoked with (x, y) in view coords.
+        """
+        self.plot = plot
+        self.on_point_selected_callback = on_point_selected_callback
+        self.is_enabled = False
+        self.vb = plot.vb
+        self._previous_mouse_enabled: Optional[Tuple[bool, bool]] = None
+
+        self.original_mouse_press = self.vb.mousePressEvent
+
+    def _set_fft_roi_interaction_toggle(self, enabled: bool) -> None:
+        """Enable/disable mouse interaction on FFT ROI items while selecting.
+
+        Args:
+            enabled: Whether ROI interaction should be enabled.
+        """
+        items = getattr(self.plot, "items", [])
+        for item in items:
+            if isinstance(item, FFTBoxROI):
+                try:
+                    item.set_interaction_enabled(enabled)
+                except Exception:
+                    pass
+
+    def enable(self) -> None:
+        """Enable point selection mode."""
+        self.is_enabled = True
+        logger.debug("PointSelectionTool enabled")
+
+        try:
+            enabled = getattr(self.vb, "state", {}).get("mouseEnabled", [True, True])
+            if isinstance(enabled, (list, tuple)) and len(enabled) >= 2:
+                self._previous_mouse_enabled = (bool(enabled[0]), bool(enabled[1]))
+            else:
+                self._previous_mouse_enabled = (True, True)
+            self.vb.setMouseEnabled(x=False, y=False)
+        except Exception:
+            self._previous_mouse_enabled = None
+
+        self._set_fft_roi_interaction_toggle(False)
+        self.vb.mousePressEvent = self._on_mouse_press
+
+    def disable(self) -> None:
+        """Disable point selection mode."""
+        self.is_enabled = False
+        self.vb.mousePressEvent = self.original_mouse_press
+
+        if self._previous_mouse_enabled is not None:
+            try:
+                self.vb.setMouseEnabled(
+                    x=self._previous_mouse_enabled[0],
+                    y=self._previous_mouse_enabled[1],
+                )
+            except Exception:
+                pass
+            self._previous_mouse_enabled = None
+
+        self._set_fft_roi_interaction_toggle(True)
+        logger.debug("PointSelectionTool disabled")
+
+    def _on_mouse_press(self, event):
+        """Handle mouse press for selecting a point.
+
+        Args:
+            event: Qt event object carrying user interaction details.
+        """
+        if not self.is_enabled:
+            self.original_mouse_press(event)
+            return
+
+        if event.button() != QtCore.Qt.LeftButton:
+            self.original_mouse_press(event)
+            return
+
+        scene_pos = event.scenePos()
+        if not self.plot.sceneBoundingRect().contains(scene_pos):
+            self.original_mouse_press(event)
+            return
+
+        view_pos = self.vb.mapSceneToView(scene_pos)
+        self.on_point_selected_callback((float(view_pos.x()), float(view_pos.y())))
+        event.accept()
+
+
 class FFTBoxROI(pg.RectROI):
     """Custom RectROI for FFT boxes with click and double-click signals."""
 
