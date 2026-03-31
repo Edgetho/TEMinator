@@ -793,7 +793,8 @@ class MeasurementController:
             p2: End point of the profile line (x, y).
         """
         viewer = self.viewer
-        profile = self._extract_line_profile(p1, p2)
+        initial_width = 0.0
+        profile = self._extract_line_profile(p1, p2, integration_width_px=initial_width)
         if profile is None:
             self.logger.debug("Profile measurement ignored: failed to extract profile")
             QtWidgets.QMessageBox.information(
@@ -820,6 +821,10 @@ class MeasurementController:
         text_item.setPos(mid_x, mid_y)
         viewer.p1.addItem(text_item)
 
+        def on_width_changed(width: float) -> None:
+            """Update profile when integration width changes."""
+            self._update_profile_integration_width(profile_id, width)
+
         profile_window = LineProfileWindow(
             f"Profile Measurement #{profile_id}",
             distances,
@@ -827,6 +832,8 @@ class MeasurementController:
             x_axis_label=x_axis_label,
             trace_colors=trace_colors,
             on_refresh=lambda pid=profile_id: self.refresh_profile_measurement(pid),
+            on_integration_width_changed=on_width_changed,
+            integration_width_px=initial_width,
             parent=viewer,
         )
         profile_window.show()
@@ -845,6 +852,7 @@ class MeasurementController:
             "x_axis_label": x_axis_label,
             "p1": (float(p1[0]), float(p1[1])),
             "p2": (float(p2[0]), float(p2[1])),
+            "integration_width_px": initial_width,
         }
         self.add_to_measurement_history_entry(
             line_label,
@@ -864,6 +872,7 @@ class MeasurementController:
         p1: Tuple[float, float],
         p2: Tuple[float, float],
         create_line_item: bool = True,
+        integration_width_px: float = 0.0,
     ) -> tuple[
         np.ndarray,
         np.ndarray | Dict[str, np.ndarray],
@@ -879,6 +888,8 @@ class MeasurementController:
         Args:
             p1: Start point of the profile line (x, y).
             p2: End point of the profile line (x, y).
+            create_line_item: Whether to create a line item on the plot.
+            integration_width_px: Width in pixels for perpendicular integration.
 
         Returns:
             Tuple of (distances, intensities, line_item, x_axis_label),
@@ -980,9 +991,20 @@ class MeasurementController:
             height=height,
         )
 
-        intensities: np.ndarray | Dict[str, np.ndarray] = self._sample_image_bilinear(
-            image, xs_clipped, ys_clipped
-        )
+        if integration_width_px > 0:
+            intensities: np.ndarray | Dict[str, np.ndarray] = (
+                line_profile_logic.sample_perpendicular_strip(
+                    image=image,
+                    xs=xs_clipped,
+                    ys=ys_clipped,
+                    integration_width_px=integration_width_px,
+                    sampler=self._sample_image_bilinear,
+                )
+            )
+        else:
+            intensities = self._sample_image_bilinear(
+                image, xs_clipped, ys_clipped
+            )
         trace_colors: Dict[str, Any] | None = None
 
         if (
@@ -1010,9 +1032,20 @@ class MeasurementController:
                 if map_image.ndim != 2 or map_image.shape != image.shape:
                     continue
 
-                active_profiles[element_name] = self._sample_image_bilinear(
-                    map_image, xs_clipped, ys_clipped
-                )
+                if integration_width_px > 0:
+                    active_profiles[element_name] = (
+                        line_profile_logic.sample_perpendicular_strip(
+                            image=map_image,
+                            xs=xs_clipped,
+                            ys=ys_clipped,
+                            integration_width_px=integration_width_px,
+                            sampler=self._sample_image_bilinear,
+                        )
+                    )
+                else:
+                    active_profiles[element_name] = self._sample_image_bilinear(
+                        map_image, xs_clipped, ys_clipped
+                    )
                 active_colors[element_name] = viewer.edx_manager.element_colors.get(
                     element_name
                 )
@@ -1021,9 +1054,10 @@ class MeasurementController:
                 intensities = active_profiles
                 trace_colors = active_colors
                 self.logger.debug(
-                    "Profile extracted with per-element traces: elements=%s samples=%s",
+                    "Profile extracted with per-element traces: elements=%s samples=%s integration_width=%.1fpx",
                     list(active_profiles.keys()),
                     sample_count,
+                    integration_width_px,
                 )
         distances_px = line_profile_logic.pixel_distance_axis(xs_clipped, ys_clipped)
 
@@ -1106,10 +1140,12 @@ class MeasurementController:
             self.logger.debug("Profile refresh ignored: missing endpoints for id=%s", profile_id)
             return
 
+        integration_width = record.get("integration_width_px", 0.0)
         refreshed = self._extract_line_profile(
             (float(p1[0]), float(p1[1])),
             (float(p2[0]), float(p2[1])),
             create_line_item=False,
+            integration_width_px=integration_width,
         )
         if refreshed is None:
             self.logger.debug("Profile refresh failed: extraction returned None for id=%s", profile_id)
@@ -1167,6 +1203,23 @@ class MeasurementController:
             profile_id,
             len(distances),
         )
+
+    def _update_profile_integration_width(self, profile_id: int, width: float) -> None:
+        """Update integration width and refresh profile data.
+
+        Args:
+            profile_id: ID of the profile to update.
+            width: New integration width in pixels.
+        """
+        viewer = self.viewer
+        record = viewer.profile_measurement_items.get(profile_id)
+        if record is None:
+            self.logger.debug("Integration width update ignored: id=%s not found", profile_id)
+            return
+
+        record["integration_width_px"] = width
+        self.logger.debug("Integration width updated for profile id=%s: %.1fpx", profile_id, width)
+        self.refresh_profile_measurement(profile_id)
 
     @staticmethod
     def _sample_image_bilinear(

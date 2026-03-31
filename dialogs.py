@@ -407,6 +407,8 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         x_axis_label: str = "Distance (px)",
         trace_colors: Optional[Dict[str, Any]] = None,
         on_refresh: Optional[Callable[[], None]] = None,
+        on_integration_width_changed: Optional[Callable[[float], None]] = None,
+        integration_width_px: float = 0.0,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         """Initialize the line profile plotting window.
@@ -419,12 +421,16 @@ class LineProfileWindow(QtWidgets.QMainWindow):
             x_axis_label: Label for the X axis.
             trace_colors: Optional mapping of trace name to pyqtgraph-compatible color.
             on_refresh: Optional callback to refresh profile from current view state.
+            on_integration_width_changed: Optional callback when integration width changes.
+            integration_width_px: Initial integration width in pixels.
             parent: Optional parent widget.
         """
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(640, 420)
+        self.resize(640, 480)
         self._on_refresh = on_refresh
+        self._on_integration_width_changed = on_integration_width_changed
+        self.integration_width_px = integration_width_px
 
         central = QtWidgets.QWidget(self)
         self.setCentralWidget(central)
@@ -442,6 +448,24 @@ class LineProfileWindow(QtWidgets.QMainWindow):
             trace_colors=trace_colors,
         )
 
+        control_row = QtWidgets.QHBoxLayout()
+        
+        integration_label = QtWidgets.QLabel("Integration Width (px):")
+        control_row.addWidget(integration_label)
+        
+        self.integration_width_spinbox = QtWidgets.QDoubleSpinBox()
+        self.integration_width_spinbox.setMinimum(0.0)
+        self.integration_width_spinbox.setMaximum(100.0)
+        self.integration_width_spinbox.setSingleStep(1.0)
+        self.integration_width_spinbox.setValue(integration_width_px)
+        self.integration_width_spinbox.setToolTip(
+            "Width in pixels perpendicular to the profile line for integration"
+        )
+        self.integration_width_spinbox.valueChanged.connect(self._on_width_changed)
+        control_row.addWidget(self.integration_width_spinbox)
+        
+        control_row.addStretch()
+
         button_row = QtWidgets.QHBoxLayout()
         button_row.addStretch()
         self.btn_refresh = QtWidgets.QPushButton("Refresh")
@@ -451,13 +475,15 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         button_row.addWidget(self.btn_refresh)
 
         layout.addWidget(self.plot_widget)
+        layout.addLayout(control_row)
         layout.addLayout(button_row)
 
         logger.debug(
-            "LineProfileWindow created: title=%s points=%s x_axis=%s",
+            "LineProfileWindow created: title=%s points=%s x_axis=%s integration_width=%.1fpx",
             title,
             len(distances),
             x_axis_label,
+            integration_width_px,
         )
 
     def _render_profile(
@@ -518,6 +544,13 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         if self._on_refresh is None:
             return
         self._on_refresh()
+
+    def _on_width_changed(self, value: float) -> None:
+        """Handle integration width spinbox value changes."""
+        self.integration_width_px = value
+        if self._on_integration_width_changed is not None:
+            self._on_integration_width_changed(value)
+        logger.debug("Integration width changed to %.1f px", value)
 
 
 class MetadataWindow(QtWidgets.QMainWindow):

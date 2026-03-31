@@ -343,3 +343,56 @@ def scaled_distance_axis(
         reference_distance,
         float(scaled_ref),
     )
+
+
+def sample_perpendicular_strip(
+    *,
+    image: np.ndarray,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    integration_width_px: float,
+    sampler: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
+) -> np.ndarray:
+    """Sample intensities along a line with perpendicular integration.
+
+    Args:
+        image: 2D image array to sample from.
+        xs: X coordinates along the profile line (pixel space).
+        ys: Y coordinates along the profile line (pixel space).
+        integration_width_px: Total width in pixels perpendicular to the line.
+        sampler: Function that samples image at (image, xs, ys) coordinates.
+
+    Returns:
+        Integrated intensity values at each point along the profile line.
+    """
+    if integration_width_px <= 0:
+        return sampler(image, xs, ys)
+
+    dx = xs[-1] - xs[0]
+    dy = ys[-1] - ys[0]
+    line_length = np.sqrt(dx**2 + dy**2)
+    
+    if line_length == 0:
+        return sampler(image, xs, ys)
+
+    perp_dx = -dy / line_length
+    perp_dy = dx / line_length
+
+    num_strips = max(3, int(np.ceil(integration_width_px)))
+    strip_offsets = np.linspace(
+        -integration_width_px / 2.0,
+        integration_width_px / 2.0,
+        num_strips
+    )
+
+    accumulated = np.zeros_like(xs, dtype=float)
+    for offset in strip_offsets:
+        xs_offset = xs + offset * perp_dx
+        ys_offset = ys + offset * perp_dy
+        
+        xs_offset = np.clip(xs_offset, 0, image.shape[1] - 1)
+        ys_offset = np.clip(ys_offset, 0, image.shape[0] - 1)
+        
+        accumulated += sampler(image, xs_offset, ys_offset)
+
+    return accumulated / num_strips
