@@ -8,7 +8,11 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="$0"
+if [[ -n "${BASH_VERSION:-}" ]]; then
+  SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 ENV_FILE_BASE="$SCRIPT_DIR/environment.yml"
 ENV_FILE_LINUX="$SCRIPT_DIR/environment.linux.yml"
 ENV_FILE="$ENV_FILE_BASE"
@@ -121,10 +125,14 @@ fi
 prompt_yes_no() {
   local prompt="$1"
   local reply
+  local reply_lower
 
   while true; do
-    read -r -p "$prompt [yes/no]: " reply
-    case "${reply,,}" in
+    printf "%s [yes/no]: " "$prompt"
+    IFS= read -r reply
+    reply_lower="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
+
+    case "$reply_lower" in
       y|yes)
         return 0
         ;;
