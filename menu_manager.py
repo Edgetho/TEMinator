@@ -306,6 +306,22 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             requires_image=True,
             menu_path="Measure",
         ),
+        MenuItemConfig(
+            title="Select Peaks",
+            shortcut="k",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            menu_path="Measure",
+        ),
+        MenuItemConfig(
+            title="Export Peaks CSV",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            menu_path="Measure",
+        ),
         # Display menu - shared items
         MenuItemConfig(
             title="Metadata",

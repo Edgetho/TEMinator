@@ -12,7 +12,7 @@
 
 - measurement mode no longer works after an FFT has been enabled in the main image window, or on child FFT windows
 
-- scaling of diffraction images is currently not handled well, in terms of setting their scale bar
+- diffraction datasets with missing/invalid calibration metadata may still require manual calibration for accurate scale-bar magnitude
 
 - profile measurements in fft views do not have correct unit display
 

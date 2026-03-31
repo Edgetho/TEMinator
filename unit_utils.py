@@ -161,6 +161,8 @@ def _linear_unit_to_meter_factor(unit_text: str | None) -> Optional[float]:
         return 1.0
 
     prefixes = {
+        "t": 1e12,
+        "g": 1e9,
         "k": 1e3,
         "": 1.0,
         "m": 1e-3,
@@ -168,6 +170,7 @@ def _linear_unit_to_meter_factor(unit_text: str | None) -> Optional[float]:
         "n": 1e-9,
         "p": 1e-12,
         "f": 1e-15,
+        "a": 1e-18,
     }
 
     if len(unit_lower) == 2 and unit_lower.endswith("m"):
