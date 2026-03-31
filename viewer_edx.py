@@ -111,6 +111,42 @@ class SpectrumAnalysisManager:
         
         self._has_edx_data = False
 
+    def _trace_event(self, event: str, **fields: Any) -> None:
+        """Forward structured export trace logs to the owning viewer when enabled."""
+        trace_hook = getattr(self.viewer, "_trace_event", None)
+        if not callable(trace_hook):
+            return
+        trace_hook(f"edx_{event}", **fields)
+
+    @staticmethod
+    def _trace_array_stats(array: Any, label: str) -> str:
+        """Return compact numeric stats for EDX map/composite diagnostics."""
+        if array is None:
+            return f"{label}:none"
+        try:
+            arr = np.asarray(array)
+        except Exception as exc:
+            return f"{label}:unavailable({type(exc).__name__})"
+        if arr.size == 0:
+            return f"{label}:shape={arr.shape} dtype={arr.dtype} size=0"
+
+        finite_mask = np.isfinite(arr)
+        finite_count = int(np.count_nonzero(finite_mask))
+        if finite_count == 0:
+            return f"{label}:shape={arr.shape} dtype={arr.dtype} finite=0/{arr.size}"
+
+        finite_values = arr[finite_mask]
+        min_val = float(np.min(finite_values))
+        max_val = float(np.max(finite_values))
+        mean_val = float(np.mean(finite_values))
+        std_val = float(np.std(finite_values))
+        channels = arr.shape[2] if arr.ndim == 3 else 1
+        return (
+            f"{label}:shape={arr.shape} dtype={arr.dtype} channels={channels} "
+            f"finite={finite_count}/{arr.size} min={min_val:.6g} max={max_val:.6g} "
+            f"mean={mean_val:.6g} std={std_val:.6g}"
+        )
+
     def detect_and_load_edx_data(
         self,
         elemental_map_signals: Optional[List[Tuple[str, Any]]] = None,
@@ -373,7 +409,15 @@ class SpectrumAnalysisManager:
         if active_elements is None:
             active_elements = list(self.active_elements)
 
+        self._trace_event(
+            "render_composite_enter",
+            requested_active=active_elements,
+            normalize=normalize_intensity,
+            total_maps=len(self.elemental_maps),
+        )
+
         if not active_elements:
+            self._trace_event("render_composite_empty", reason="no_active_elements")
             return None
 
         # Load maps if not already loaded
@@ -389,6 +433,7 @@ class SpectrumAnalysisManager:
                 break
 
         if first_map is None:
+            self._trace_event("render_composite_empty", reason="no_loaded_maps")
             return None
 
         # Initialize composite RGB
@@ -397,9 +442,19 @@ class SpectrumAnalysisManager:
         # Composite each map with its assigned color
         for elem in active_elements:
             if elem not in self.elemental_maps or self.elemental_maps[elem] is None:
+                self._trace_event(
+                    "render_composite_skip_element",
+                    element=elem,
+                    reason="missing_map_data",
+                )
                 continue
 
             map_data = self.elemental_maps[elem].astype(np.float32)
+            self._trace_event(
+                "render_composite_element_source",
+                element=elem,
+                source_stats=self._trace_array_stats(map_data, "source"),
+            )
 
             # Normalize to [0, 1]
             if normalize_intensity:
@@ -409,6 +464,13 @@ class SpectrumAnalysisManager:
                     map_data = (map_data - map_min) / (map_max - map_min)
                 else:
                     map_data = np.zeros_like(map_data)
+                self._trace_event(
+                    "render_composite_element_normalized",
+                    element=elem,
+                    map_min=float(map_min),
+                    map_max=float(map_max),
+                    normalized_stats=self._trace_array_stats(map_data, "normalized"),
+                )
 
             # Get color for this element
             rgb = self.element_colors.get(elem, (255, 255, 255))
@@ -420,10 +482,21 @@ class SpectrumAnalysisManager:
 
             # Additive blending
             composite += colored_map
+            self._trace_event(
+                "render_composite_element_blended",
+                element=elem,
+                color=rgb,
+                blended_stats=self._trace_array_stats(composite, "composite_accum"),
+            )
 
         # Clamp to [0, 1] and convert to uint8
         composite = np.clip(composite, 0, 1) * 255
-        return composite.astype(np.uint8)
+        out = composite.astype(np.uint8)
+        self._trace_event(
+            "render_composite_exit",
+            output_stats=self._trace_array_stats(out, "output_u8"),
+        )
+        return out
 
     def _load_elemental_map(self, element: str) -> bool:
         """Load elemental map data from signal or lazy-load from metadata.
@@ -725,6 +798,12 @@ class SpectrumAnalysisManager:
             self.active_elements.add(element)
         else:
             self.active_elements.discard(element)
+        self._trace_event(
+            "element_checkbox_changed",
+            element=element,
+            state=int(state),
+            active_elements=sorted(list(self.active_elements)),
+        )
         self.logger.debug(f"Active elements: {self.active_elements}")
         self._cached_composite_needs_update = True
         if hasattr(self.viewer, "_update_edx_legend_overlay"):

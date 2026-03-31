@@ -830,12 +830,55 @@ def apply_intensity_transform(
         New float32 array in the range [0, 1], or ``None`` if ``image`` is invalid.
     """
 
+    trace_enabled = str(os.environ.get("TEMINATOR_EXPORT_TRACE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    def _trace_array_stats(array: Any, label: str) -> str:
+        if array is None:
+            return f"{label}:none"
+        try:
+            arr_local = np.asarray(array)
+        except Exception as exc:
+            return f"{label}:unavailable({type(exc).__name__})"
+        if arr_local.size == 0:
+            return f"{label}:shape={arr_local.shape} dtype={arr_local.dtype} size=0"
+        finite_local = np.isfinite(arr_local)
+        finite_count_local = int(np.count_nonzero(finite_local))
+        if finite_count_local == 0:
+            return (
+                f"{label}:shape={arr_local.shape} dtype={arr_local.dtype} "
+                f"finite=0/{arr_local.size}"
+            )
+        finite_vals_local = arr_local[finite_local]
+        min_local = float(np.min(finite_vals_local))
+        max_local = float(np.max(finite_vals_local))
+        mean_local = float(np.mean(finite_vals_local))
+        std_local = float(np.std(finite_vals_local))
+        return (
+            f"{label}:shape={arr_local.shape} dtype={arr_local.dtype} "
+            f"finite={finite_count_local}/{arr_local.size} min={min_local:.6g} "
+            f"max={max_local:.6g} mean={mean_local:.6g} std={std_local:.6g}"
+        )
+
     if image is None:
         return None
 
     arr = np.asarray(image, dtype=np.float32)
     if arr.size == 0:
         return None
+
+    if trace_enabled:
+        logger.debug(
+            "EXPORT_TRACE event=utils_apply_intensity_enter min_val=%s max_val=%s gamma=%s %s",
+            min_val,
+            max_val,
+            gamma,
+            _trace_array_stats(arr, "input"),
+        )
 
     finite_mask = np.isfinite(arr)
     if not np.any(finite_mask):
@@ -857,10 +900,29 @@ def apply_intensity_transform(
     norm = (arr - float(min_val)) / float(max_val - min_val)
     norm = np.clip(norm, 0.0, 1.0, out=norm)
 
+    if trace_enabled:
+        clip_lo = float(np.mean(norm <= 0.0))
+        clip_hi = float(np.mean(norm >= 1.0))
+        logger.debug(
+            "EXPORT_TRACE event=utils_apply_intensity_windowed min_val=%s max_val=%s clip_lo=%.6g clip_hi=%.6g %s",
+            min_val,
+            max_val,
+            clip_lo,
+            clip_hi,
+            _trace_array_stats(norm, "norm"),
+        )
+
     if gamma is None or gamma <= 0 or not np.isfinite(gamma):
         gamma = 1.0
 
     inv_gamma = 1.0 / float(gamma)
     corrected = np.power(norm, inv_gamma, dtype=np.float32)
+
+    if trace_enabled:
+        logger.debug(
+            "EXPORT_TRACE event=utils_apply_intensity_exit inv_gamma=%s %s",
+            inv_gamma,
+            _trace_array_stats(corrected, "corrected"),
+        )
 
     return corrected

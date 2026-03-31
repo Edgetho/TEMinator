@@ -185,6 +185,9 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._mipmap_levels: List[np.ndarray] = []
         self._current_mipmap_level: int = -1
         self._display_image_full_res: Optional[np.ndarray] = None
+        self._export_trace_enabled: bool = str(
+            os.environ.get("TEMINATOR_EXPORT_TRACE", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.measurements = MeasurementController(self, logger)
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
         self.edx_manager = SpectrumAnalysisManager(self, logger)
@@ -1529,6 +1532,50 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         return max(0, min(level, len(self._mipmap_levels) - 1))
 
+    def _trace_event(self, event: str, **fields: Any) -> None:
+        """Emit a structured debug trace line when export tracing is enabled."""
+        if not self._export_trace_enabled:
+            return
+        payload_parts: List[str] = []
+        for key, value in fields.items():
+            payload_parts.append(f"{key}={value}")
+        payload = " ".join(payload_parts)
+        logger.debug("EXPORT_TRACE event=%s %s", event, payload)
+
+    @staticmethod
+    def _trace_array_stats(array: Any, label: str) -> str:
+        """Return compact numeric stats for tracing array state transitions."""
+        if array is None:
+            return f"{label}:none"
+        try:
+            arr = np.asarray(array)
+        except Exception as exc:
+            return f"{label}:unavailable({type(exc).__name__})"
+        if arr.size == 0:
+            return f"{label}:shape={arr.shape} dtype={arr.dtype} size=0"
+
+        finite_mask = np.isfinite(arr)
+        finite_count = int(np.count_nonzero(finite_mask))
+        if finite_count == 0:
+            return (
+                f"{label}:shape={arr.shape} dtype={arr.dtype} finite=0/{arr.size} "
+                "min=nan max=nan"
+            )
+
+        finite_values = arr[finite_mask]
+        min_val = float(np.min(finite_values))
+        max_val = float(np.max(finite_values))
+        mean_val = float(np.mean(finite_values))
+        std_val = float(np.std(finite_values))
+        p01, p50, p99 = np.percentile(finite_values, [1, 50, 99])
+        channels = arr.shape[2] if arr.ndim == 3 else 1
+        return (
+            f"{label}:shape={arr.shape} dtype={arr.dtype} channels={channels} "
+            f"finite={finite_count}/{arr.size} min={min_val:.6g} max={max_val:.6g} "
+            f"mean={mean_val:.6g} std={std_val:.6g} p01={float(p01):.6g} "
+            f"p50={float(p50):.6g} p99={float(p99):.6g}"
+        )
+
     def _set_display_image(self, image: np.ndarray) -> None:
         """Push image data into the display item with current quality mode.
 
@@ -1539,11 +1586,31 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if self.img_orig is None:
             return
 
+        self._trace_event(
+            "set_display_image_enter",
+            view_mode=self.view_mode,
+            quality=self._render_quality_mode(),
+            source_stats=self._trace_array_stats(image, "input"),
+        )
+
         self._display_image_full_res = np.asarray(image, dtype=np.float32)
         quality = self._render_quality_mode()
 
+        self._trace_event(
+            "set_display_image_after_cast",
+            full_res_stats=self._trace_array_stats(self._display_image_full_res, "full_res"),
+        )
+
         if quality == RESAMPLING_HIGH:
             self._build_mipmap_levels(self._display_image_full_res)
+            self._trace_event(
+                "set_display_image_mipmap_built",
+                levels=len(self._mipmap_levels),
+                level0_stats=self._trace_array_stats(
+                    self._mipmap_levels[0] if self._mipmap_levels else None,
+                    "mipmap0",
+                ),
+            )
             self._on_view_range_changed(force=True)
             return
 
@@ -1551,6 +1618,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._current_mipmap_level = -1
         self.img_orig.setImage(
             self._display_image_full_res, autoLevels=False, levels=(0.0, 1.0)
+        )
+        self._trace_event(
+            "set_display_image_after_setImage",
+            levels="(0.0,1.0)",
+            image_item_stats=self._trace_array_stats(getattr(self.img_orig, "image", None), "img_item"),
         )
 
     def _on_view_range_changed(self, *_args, force: bool = False) -> None:
@@ -1568,6 +1640,13 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
 
         level = self._compute_target_mipmap_level()
+        self._trace_event(
+            "view_range_changed",
+            force=force,
+            chosen_level=level,
+            current_level=self._current_mipmap_level,
+            mipmap_levels=len(self._mipmap_levels),
+        )
         if not force and level == self._current_mipmap_level:
             return
 
@@ -1575,9 +1654,24 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.img_orig.setImage(
             self._mipmap_levels[level], autoLevels=False, levels=(0.0, 1.0)
         )
+        self._trace_event(
+            "view_range_after_setImage",
+            level=level,
+            level_stats=self._trace_array_stats(self._mipmap_levels[level], "mipmap"),
+            image_item_stats=self._trace_array_stats(getattr(self.img_orig, "image", None), "img_item"),
+        )
 
     def _update_image_display(self):
         """Render source data into the image item using tone and colormap settings."""
+        self._trace_event(
+            "update_display_enter",
+            view_mode=self.view_mode,
+            has_data=self.data is not None,
+            has_img_item=self.img_orig is not None,
+            display_min=self.display_min,
+            display_max=self.display_max,
+            display_gamma=self.display_gamma,
+        )
         if self.data is None or self.img_orig is None:
             if self.view_mode not in {"fft", "inverse_fft"}:
                 return
@@ -1591,15 +1685,31 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             and hasattr(self, "edx_manager")
             and self.edx_manager.get_has_edx_data()
         ):
+            self._trace_event(
+                "update_display_edx_branch",
+                active_elements=sorted(list(self.edx_manager.active_elements)),
+                map_count=len(self.edx_manager.elemental_maps),
+            )
             self._update_edx_legend_overlay()
             if self.edx_manager.active_elements:
                 composite_map = self.edx_manager.render_composite_map()
                 if composite_map is not None:
                     display_data = composite_map.astype(np.float32) / 255.0
+                    self._trace_event(
+                        "update_display_edx_composite",
+                        composite_stats=self._trace_array_stats(composite_map, "composite_u8"),
+                        display_stats=self._trace_array_stats(display_data, "display_f32"),
+                    )
                     self._set_display_image(display_data)
                     return
             else:
-                self._set_display_image(self._blank_edx_display_image())
+                blank = self._blank_edx_display_image()
+                self._trace_event(
+                    "update_display_edx_blank",
+                    reason="no_active_elements",
+                    blank_stats=self._trace_array_stats(blank, "blank"),
+                )
+                self._set_display_image(blank)
                 return
 
         if self.view_mode == "fft":
@@ -1616,6 +1726,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             if adjusted is None:
                 return
+
+            self._trace_event(
+                "update_display_fft",
+                source_stats=self._trace_array_stats(display_data, "fft_source"),
+                adjusted_stats=self._trace_array_stats(adjusted, "fft_adjusted"),
+            )
 
             self._set_display_image(adjusted)
             if self._nyq_x is not None and self._nyq_y is not None:
@@ -1639,6 +1755,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             if adjusted is None:
                 return
 
+            self._trace_event(
+                "update_display_inverse_fft",
+                source_stats=self._trace_array_stats(self._inverse_fft_image, "ifft_source"),
+                adjusted_stats=self._trace_array_stats(adjusted, "ifft_adjusted"),
+            )
+
             self._set_display_image(adjusted)
             return
 
@@ -1652,6 +1774,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         )
         if adjusted is None:
             return
+
+        self._trace_event(
+            "update_display_image",
+            source_stats=self._trace_array_stats(display_data, "image_source"),
+            adjusted_stats=self._trace_array_stats(adjusted, "image_adjusted"),
+        )
 
         self._set_display_image(adjusted)
 
@@ -1667,6 +1795,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         name = self._available_colormaps[
             self._current_colormap_index % len(self._available_colormaps)
         ]
+        lut_obj = getattr(self.img_orig, "lut", None)
+        lut_len = len(lut_obj) if lut_obj is not None else 0
+        self._trace_event(
+            "apply_colormap_enter",
+            selected=name,
+            display_stats=self._trace_array_stats(self._display_image_full_res, "display"),
+            lut_len_before=lut_len,
+        )
 
         # "gray" means the default grayscale appearance (no custom LUT)
         if name == "gray":
@@ -1674,17 +1810,28 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                 self.img_orig.setLookupTable(None)
             except Exception:
                 pass
+            self._trace_event("apply_colormap_gray", action="setLookupTable(None)")
             return
 
         try:
             cmap = pg.colormap.get(name)
-            self.img_orig.setLookupTable(cmap.getLookupTable())
+            lut = cmap.getLookupTable()
+            self.img_orig.setLookupTable(lut)
+            self._trace_event(
+                "apply_colormap_named",
+                action="setLookupTable(lut)",
+                lut_len=len(lut),
+            )
         except Exception:
             # Fall back to default grayscale if something goes wrong
             try:
                 self.img_orig.setLookupTable(None)
             except Exception:
                 pass
+            self._trace_event(
+                "apply_colormap_error",
+                action="fallback_setLookupTable(None)",
+            )
 
     def setup_keyboard_shortcuts(self):
         """Configure keyboard shortcuts for common image operations.
@@ -2331,6 +2478,20 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             ext = default_ext
             main_path = main_path.with_suffix(ext)
 
+        self._trace_event(
+            "save_config",
+            selected_path=selected_path,
+            selected_filter=selected_filter,
+            resolved_main_path=str(main_path),
+            fmt_name=fmt_name,
+            ext=ext,
+            display_stats=self._trace_array_stats(self._display_image_full_res, "display_full_res"),
+            image_item_stats=self._trace_array_stats(
+                getattr(self.img_orig, "image", None) if self.img_orig is not None else None,
+                "img_item",
+            ),
+        )
+
         directory_path = main_path.parent
         typed_name = main_path.stem
         if typed_name.endswith("_view") and len(typed_name) > len("_view"):
@@ -2368,7 +2529,28 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             )
             return
 
-        if not pixmap.save(str(main_path), fmt_name):
+        qimg = pixmap.toImage()
+        qimg_bytes = (
+            int(qimg.sizeInBytes()) if hasattr(qimg, "sizeInBytes") else int(qimg.byteCount())
+        )
+        self._trace_event(
+            "save_main_grabbed",
+            pixmap_w=pixmap.width(),
+            pixmap_h=pixmap.height(),
+            pixmap_depth=pixmap.depth(),
+            qimg_format=int(qimg.format()),
+            qimg_has_alpha=qimg.hasAlphaChannel(),
+            qimg_bytes=qimg_bytes,
+        )
+
+        save_ok = pixmap.save(str(main_path), fmt_name)
+        self._trace_event(
+            "save_main_result",
+            ok=save_ok,
+            path=str(main_path),
+            fmt=fmt_name,
+        )
+        if not save_ok:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Save Images",
@@ -2435,9 +2617,29 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
                         pass
                 continue
 
+            fft_qimg = fft_pixmap.toImage()
+            fft_bytes = (
+                int(fft_qimg.sizeInBytes())
+                if hasattr(fft_qimg, "sizeInBytes")
+                else int(fft_qimg.byteCount())
+            )
+
             chain = self._transform_chain_label(fft_window)
             fft_path = directory_path / f"{base_name}_{chain}{ext}"
-            if fft_pixmap.save(str(fft_path), fmt_name):
+            fft_ok = fft_pixmap.save(str(fft_path), fmt_name)
+            self._trace_event(
+                "save_fft_result",
+                chain=chain,
+                ok=fft_ok,
+                path=str(fft_path),
+                fmt=fmt_name,
+                pixmap_w=fft_pixmap.width(),
+                pixmap_h=fft_pixmap.height(),
+                qimg_format=int(fft_qimg.format()),
+                qimg_has_alpha=fft_qimg.hasAlphaChannel(),
+                qimg_bytes=fft_bytes,
+            )
+            if fft_ok:
                 fft_saved += 1
                 logger.debug("Saved FFT view: %s", fft_path)
 
@@ -2466,8 +2668,28 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             except Exception:
                 continue
 
+            profile_qimg = profile_pixmap.toImage()
+            profile_bytes = (
+                int(profile_qimg.sizeInBytes())
+                if hasattr(profile_qimg, "sizeInBytes")
+                else int(profile_qimg.byteCount())
+            )
+
             profile_path = directory_path / f"{base_name}_profile{profile_id}{ext}"
-            if profile_pixmap.save(str(profile_path), fmt_name):
+            profile_ok = profile_pixmap.save(str(profile_path), fmt_name)
+            self._trace_event(
+                "save_profile_result",
+                profile_id=profile_id,
+                ok=profile_ok,
+                path=str(profile_path),
+                fmt=fmt_name,
+                pixmap_w=profile_pixmap.width(),
+                pixmap_h=profile_pixmap.height(),
+                qimg_format=int(profile_qimg.format()),
+                qimg_has_alpha=profile_qimg.hasAlphaChannel(),
+                qimg_bytes=profile_bytes,
+            )
+            if profile_ok:
                 profile_saved += 1
                 logger.debug("Saved profile view: %s", profile_path)
 
