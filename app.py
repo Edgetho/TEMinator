@@ -60,6 +60,12 @@ def _parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Enable verbose debug logging.",
     )
     parser.add_argument(
+        "-v2",
+        "--verbose2",
+        action="store_true",
+        help="Enable export/render trace diagnostics.",
+    )
+    parser.add_argument(
         "--force-x11",
         action="store_true",
         help="Force Qt to use the X11/xcb platform backend (Linux only).",
@@ -77,12 +83,17 @@ def main() -> None:
 
     cli_args, qt_args = _parse_cli_args(sys.argv[1:])
 
+    if cli_args.verbose2:
+        os.environ["TEMINATOR_EXPORT_TRACE"] = "1"
+
     logging.basicConfig(
         level=logging.DEBUG if cli_args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
     logger = logging.getLogger(__name__)
     logger.debug("Verbose mode enabled")
+    if cli_args.verbose2:
+        logger.info("Export/render trace diagnostics enabled (--verbose2)")
     logger.debug("Qt passthrough args: %s", qt_args)
 
     if cli_args.force_x11 and sys.platform.startswith("linux"):

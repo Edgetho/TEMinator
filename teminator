@@ -37,6 +37,8 @@ Options:
                   Force software rendering (disable hardware acceleration).
   -v, --verbose
                   Enable verbose TEMinator debug logging (forwarded to app.py).
+  -v2, --verbose2
+                  Enable export/render trace diagnostics (sets TEMINATOR_EXPORT_TRACE=1).
   -h, --help      Show this help message and exit.
 
 Examples:
@@ -46,8 +48,9 @@ Examples:
   $(basename "$0") --force-x11
   $(basename "$0") --force-software
   $(basename "$0") --verbose
+  $(basename "$0") -v2
   $(basename "$0") /path/to/image.dm4
-  $(basename "$0") --debug-qt --force-x11 --verbose /path/to/image.dm4
+  $(basename "$0") --debug-qt --force-x11 --verbose -v2 /path/to/image.dm4
 
 Notes:
   - All non-launcher arguments are forwarded to app.py.
@@ -59,6 +62,7 @@ EOF
 
 ENABLE_QT_DEBUG=0
 ENABLE_APP_VERBOSE=0
+ENABLE_TRACE_VERBOSE2=0
 FORCE_BUILD_ENV=0
 FORCE_X11=0
 FORCE_SOFTWARE=0
@@ -81,6 +85,9 @@ for arg in "$@"; do
       ;;
     -v|--verbose)
       ENABLE_APP_VERBOSE=1
+      ;;
+    -v2|--verbose2)
+      ENABLE_TRACE_VERBOSE2=1
       ;;
     -h|--help)
       SHOW_HELP=1
@@ -234,6 +241,10 @@ if [[ "$ENABLE_QT_DEBUG" -eq 1 ]]; then
   set -- "$@" QT_DEBUG_PLUGINS=1
 fi
 
+if [[ "$ENABLE_TRACE_VERBOSE2" -eq 1 ]]; then
+  set -- "$@" TEMINATOR_EXPORT_TRACE=1
+fi
+
 set -- "$@" python "$APP_FILE"
 
 if [[ "$FORCE_X11" -eq 1 ]]; then
@@ -246,6 +257,10 @@ fi
 
 if [[ "$ENABLE_APP_VERBOSE" -eq 1 ]]; then
   set -- "$@" --verbose
+fi
+
+if [[ "$ENABLE_TRACE_VERBOSE2" -eq 1 ]]; then
+  set -- "$@" --verbose2
 fi
 
 if [[ ${#APP_ARGS[@]} -gt 0 ]]; then
