@@ -226,6 +226,36 @@ Measurement management:
 - **Clear Measurements** removes all measurement graphics and clears the history.
 - The **Measurement History** window lists every measurement taken and supports clearing, deleting, copying to clipboard, and CSV export.
 
+### Selecting peaks and exporting CSV
+
+1. Choose **Measure → Select Peaks**.
+2. Click near each peak of interest.
+3. Each click snaps to the nearest local maximum and fits a 2D Gaussian near that peak.
+4. Choose **Measure → Export Peaks CSV** to save the selected peak data.
+
+CSV header fields:
+
+- `teminator_version_git_hash`
+- `export_timestamp_iso`
+- `source_file`
+- `distance_units`
+
+CSV peak columns (in order):
+
+- `peak_index`
+- `x_px`, `y_px`
+- `x_cal`, `y_cal`
+- `nearest_x_px`, `nearest_y_px`
+- `nearest_x_cal`, `nearest_y_cal`
+- `gaussian_sigma_y_px`, `gaussian_sigma_x_px`
+- `gaussian_sigma_y_cal`, `gaussian_sigma_x_cal`
+- `gaussian_goodness_of_fit`
+
+Goodness-of-fit note:
+
+- `gaussian_goodness_of_fit` is the Gaussian fit $R^2$ value.
+- Higher is better (best near `1.0`), near `0` is weak, and negative indicates a poor fit.
+
 ---
 
 Architecture overview
