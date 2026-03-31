@@ -2155,7 +2155,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         # Determine if EDX data is available
         edx_available = (
             hasattr(self, "edx_manager") 
-            and self.edx_manager.get_has_edx_data()
+            and self.edx_manager.get_capability_state().has_edx_data
         )
 
         # Build menus using the builder

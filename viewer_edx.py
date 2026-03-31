@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
+from eds_models import EDSCapabilityState, EDSMetadataContext, EDSROIRegion
 from types_common import LoggerLike
 
 
@@ -86,7 +88,7 @@ class SpectrumAnalysisManager:
         self.spectrum_colors: Dict[str, Tuple[int, int, int]] = {}  # spectrum -> (R, G, B)
         
         # Integration region state
-        self.integration_regions: List[Dict[str, Any]] = []  # list of region definitions
+        self.integration_regions: List[EDSROIRegion] = []
         self.region_count: int = 0
         self.active_region_selector: bool = False
         
@@ -94,6 +96,9 @@ class SpectrumAnalysisManager:
         self.beam_energy_ev: float = 200.0  # default 200 eV
         self.spectrum_dispersion: float = 5.0  # eV per channel
         self.spectrum_offset: float = 0.0  # eV offset
+        self.live_time_s: Optional[float] = None
+        self.real_time_s: Optional[float] = None
+        self.xray_lines: List[str] = []
         self._calibration_source: str = "uncalibrated"
         
         # Cached composite map for display
@@ -298,34 +303,120 @@ class SpectrumAnalysisManager:
             meta: The original metadata dictionary.
         """
         try:
-            # Try to get beam energy
-            if "Acquisition_instrument" in meta and "TEM" in meta["Acquisition_instrument"]:
-                tem_info = meta["Acquisition_instrument"]["TEM"]
-                if "beam_energy" in tem_info:
-                    self.beam_energy_ev = float(tem_info["beam_energy"])
-                    self.logger.debug(f"Loaded beam energy: {self.beam_energy_ev} eV")
+            ctx = self._build_metadata_context(meta)
 
-            # Try to get detector spectral parameters
-            if "Detectors" in meta:
-                detectors = meta["Detectors"]
-                # Look for analytical detectors with EDS info
-                for det_name, det_info in detectors.items():
-                    if isinstance(det_info, dict):
-                        if det_info.get("DetectorType") == "AnalyticalDetector":
-                            if "Dispersion" in det_info:
-                                self.spectrum_dispersion = float(det_info["Dispersion"])
-                            if "OffsetEnergy" in det_info:
-                                self.spectrum_offset = float(det_info["OffsetEnergy"])
-                            self.logger.debug(
-                                f"Loaded EDS calibration: dispersion={self.spectrum_dispersion} eV/ch, "
-                                f"offset={self.spectrum_offset} eV"
-                            )
-                            break
-            
-            self._calibration_source = "metadata"
-        except (KeyError, ValueError, TypeError) as e:
+            if ctx.beam_energy_ev is not None:
+                self.beam_energy_ev = float(ctx.beam_energy_ev)
+            if ctx.dispersion_ev_per_channel is not None:
+                self.spectrum_dispersion = float(ctx.dispersion_ev_per_channel)
+            if ctx.offset_ev is not None:
+                self.spectrum_offset = float(ctx.offset_ev)
+
+            self.live_time_s = ctx.live_time_s
+            self.real_time_s = ctx.real_time_s
+            self.xray_lines = list(ctx.xray_lines)
+
+            has_any_calibration = (
+                ctx.beam_energy_ev is not None
+                or ctx.dispersion_ev_per_channel is not None
+                or ctx.offset_ev is not None
+            )
+            self._calibration_source = "metadata" if has_any_calibration else "uncalibrated"
+            self.logger.debug(
+                "Resolved EDS metadata context: beam=%s eV dispersion=%s eV/ch "
+                "offset=%s eV live_time=%s s real_time=%s s lines=%s",
+                ctx.beam_energy_ev,
+                ctx.dispersion_ev_per_channel,
+                ctx.offset_ev,
+                ctx.live_time_s,
+                ctx.real_time_s,
+                list(ctx.xray_lines),
+            )
+        except Exception as e:
             self.logger.debug(f"Could not parse energy calibration from metadata: {e}")
             self._calibration_source = "uncalibrated"
+
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        """Attempt numeric conversion, returning None for invalid values."""
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _first_present_number(candidates: Sequence[Any]) -> Optional[float]:
+        """Return the first valid numeric value found in candidates."""
+        for value in candidates:
+            converted = SpectrumAnalysisManager._coerce_float(value)
+            if converted is not None:
+                return converted
+        return None
+
+    def _build_metadata_context(self, meta: Dict[str, Any]) -> EDSMetadataContext:
+        """Resolve EDS calibration/timing metadata using a fallback hierarchy."""
+        mapped_meta = getattr(self.viewer.signal, "metadata", None)
+        mapped_sample: Dict[str, Any] = {}
+        mapped_tem: Dict[str, Any] = {}
+        if mapped_meta is not None:
+            try:
+                if "Sample" in mapped_meta:
+                    mapped_sample = dict(mapped_meta["Sample"])
+            except Exception:
+                mapped_sample = {}
+            try:
+                if "Acquisition_instrument" in mapped_meta and "TEM" in mapped_meta["Acquisition_instrument"]:
+                    mapped_tem = dict(mapped_meta["Acquisition_instrument"]["TEM"])
+            except Exception:
+                mapped_tem = {}
+
+        original_tem = meta.get("Acquisition_instrument", {}).get("TEM", {})
+        beam_energy_ev = self._first_present_number(
+            [
+                mapped_tem.get("beam_energy"),
+                original_tem.get("beam_energy"),
+                meta.get("Acquisition", {}).get("BeamEnergy"),
+            ]
+        )
+
+        dispersion_ev_per_channel = None
+        offset_ev = None
+        live_time_s = None
+        real_time_s = None
+        detectors = meta.get("Detectors", {})
+        if isinstance(detectors, dict):
+            for det_info in detectors.values():
+                if not isinstance(det_info, dict):
+                    continue
+                if det_info.get("DetectorType") != "AnalyticalDetector":
+                    continue
+                if dispersion_ev_per_channel is None:
+                    dispersion_ev_per_channel = self._coerce_float(det_info.get("Dispersion"))
+                if offset_ev is None:
+                    offset_ev = self._coerce_float(det_info.get("OffsetEnergy"))
+                if live_time_s is None:
+                    live_time_s = self._coerce_float(det_info.get("LiveTime"))
+                if real_time_s is None:
+                    real_time_s = self._coerce_float(det_info.get("RealTime"))
+
+        xray_lines: List[str] = []
+        lines_from_mapped = mapped_sample.get("xray_lines", [])
+        lines_from_original = meta.get("Sample", {}).get("xray_lines", [])
+        for candidate in (lines_from_mapped, lines_from_original):
+            if isinstance(candidate, list) and candidate:
+                xray_lines = [str(line) for line in candidate]
+                break
+
+        return EDSMetadataContext(
+            beam_energy_ev=beam_energy_ev,
+            dispersion_ev_per_channel=dispersion_ev_per_channel,
+            offset_ev=offset_ev,
+            live_time_s=live_time_s,
+            real_time_s=real_time_s,
+            xray_lines=xray_lines,
+        )
 
     def _load_element_colors_from_metadata(self, meta: Dict[str, Any]) -> None:
         """Load color assignments for elements from metadata.
@@ -535,6 +626,24 @@ class SpectrumAnalysisManager:
         """
         return self._has_edx_data
 
+    def get_capability_state(self) -> EDSCapabilityState:
+        """Return runtime EDS capability flags used by menus and controls."""
+        has_energy_calibration = (
+            self._calibration_source != "uncalibrated"
+            or self.spectrum_dispersion is not None
+            or self.spectrum_offset is not None
+        )
+        has_timing_metadata = self.live_time_s is not None or self.real_time_s is not None
+        return EDSCapabilityState(
+            has_edx_data=self._has_edx_data,
+            has_elemental_maps=bool(self.elemental_maps),
+            has_spectra=bool(self.spectra),
+            has_integration_regions=bool(self.integration_regions),
+            has_energy_calibration=has_energy_calibration,
+            has_timing_metadata=has_timing_metadata,
+            has_xray_lines=bool(self.xray_lines),
+        )
+
     def add_integration_region(self, region_data: Dict[str, Any]) -> int:
         """Add an integration region and return its ID.
 
@@ -545,8 +654,37 @@ class SpectrumAnalysisManager:
             Region ID.
         """
         region_id = self.region_count
-        region_data["id"] = region_id
-        self.integration_regions.append(region_data)
+        geometry_type = str(region_data.get("type", "unknown"))
+        calibration_units = str(region_data.get("calibration_units", "px"))
+        timestamp_iso = str(
+            region_data.get("timestamp")
+            or datetime.now(timezone.utc).isoformat()
+        )
+
+        coordinates_raw = region_data.get("coordinates", [])
+        coordinates: List[Tuple[float, float]] = []
+        if isinstance(coordinates_raw, list):
+            for coord in coordinates_raw:
+                if not isinstance(coord, (list, tuple)) or len(coord) != 2:
+                    continue
+                x = self._coerce_float(coord[0])
+                y = self._coerce_float(coord[1])
+                if x is None or y is None:
+                    continue
+                coordinates.append((x, y))
+
+        reserved_keys = {"id", "type", "calibration_units", "timestamp", "coordinates"}
+        metadata = {k: v for k, v in region_data.items() if k not in reserved_keys}
+
+        region = EDSROIRegion(
+            region_id=region_id,
+            geometry_type=geometry_type,
+            coordinates=coordinates,
+            calibration_units=calibration_units,
+            timestamp_iso=timestamp_iso,
+            metadata=metadata,
+        )
+        self.integration_regions.append(region)
         self.region_count += 1
         self.logger.debug(f"Added integration region {region_id}")
         return region_id
@@ -561,7 +699,7 @@ class SpectrumAnalysisManager:
             True if removed, False if not found.
         """
         for i, region in enumerate(self.integration_regions):
-            if region.get("id") == region_id:
+            if region.region_id == region_id:
                 self.integration_regions.pop(i)
                 self.logger.debug(f"Removed integration region {region_id}")
                 return True
