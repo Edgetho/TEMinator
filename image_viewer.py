@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import hyperspy.api as hs
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.exporters as pg_exporters
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 import calibration_logic
@@ -2418,6 +2419,45 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         parts.reverse()
         return "-".join(parts) if parts else "oops"
 
+    @staticmethod
+    def _capture_plot_pixmap(
+        plot_item: Any,
+        fallback_widget: QtWidgets.QWidget,
+        trace_event: Optional[Callable[..., None]] = None,
+        trace_target: str = "unknown",
+    ) -> QtGui.QPixmap:
+        """Capture a plot item via ImageExporter, falling back to widget grab."""
+        try:
+            exporter = pg_exporters.ImageExporter(plot_item)
+            exported = exporter.export(toBytes=True)
+            if isinstance(exported, QtGui.QImage) and not exported.isNull():
+                pixmap = QtGui.QPixmap.fromImage(exported)
+                if not pixmap.isNull():
+                    if callable(trace_event):
+                        trace_event(
+                            "capture_path",
+                            target=trace_target,
+                            mode="image_exporter",
+                            width=pixmap.width(),
+                            height=pixmap.height(),
+                            depth=pixmap.depth(),
+                        )
+                    return pixmap
+        except Exception:
+            pass
+
+        pixmap = fallback_widget.grab()
+        if callable(trace_event):
+            trace_event(
+                "capture_path",
+                target=trace_target,
+                mode="widget_grab_fallback",
+                width=pixmap.width(),
+                height=pixmap.height(),
+                depth=pixmap.depth(),
+            )
+        return pixmap
+
     def _save_view_and_ffts(self) -> None:
         """Save the current view (with annotations) and any FFT windows and their children, recursively.
 
@@ -2514,7 +2554,23 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         # Capture main view (graphics widget) including annotations and label
         try:
-            pixmap = self.glw.grab()
+            if self.p1 is not None:
+                pixmap = self._capture_plot_pixmap(
+                    self.p1,
+                    self.glw,
+                    trace_event=self._trace_event,
+                    trace_target="main",
+                )
+            else:
+                pixmap = self.glw.grab()
+                self._trace_event(
+                    "capture_path",
+                    target="main",
+                    mode="widget_grab_direct",
+                    width=pixmap.width(),
+                    height=pixmap.height(),
+                    depth=pixmap.depth(),
+                )
         except Exception as e:
             # Clean up overlay on failure
             if extra_label_applied:
@@ -2608,7 +2664,24 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             # how the main image view is exported.
             try:
                 fft_view_widget = getattr(fft_window, "glw", fft_window)
-                fft_pixmap = fft_view_widget.grab()
+                fft_plot_item = getattr(fft_window, "p1", None)
+                if fft_plot_item is not None:
+                    fft_pixmap = self._capture_plot_pixmap(
+                        fft_plot_item,
+                        fft_view_widget,
+                        trace_event=self._trace_event,
+                        trace_target=f"fft:{getattr(fft_window, 'fft_name', 'unknown')}",
+                    )
+                else:
+                    fft_pixmap = fft_view_widget.grab()
+                    self._trace_event(
+                        "capture_path",
+                        target=f"fft:{getattr(fft_window, 'fft_name', 'unknown')}",
+                        mode="widget_grab_direct",
+                        width=fft_pixmap.width(),
+                        height=fft_pixmap.height(),
+                        depth=fft_pixmap.depth(),
+                    )
             except Exception:
                 if extra_label_applied_fft:
                     try:
@@ -2664,7 +2737,27 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             try:
                 plot_widget = getattr(profile_window, "plot_widget", None)
                 capture_widget = plot_widget if plot_widget is not None else profile_window
-                profile_pixmap = capture_widget.grab()
+                profile_plot_item = None
+                if plot_widget is not None and hasattr(plot_widget, "getPlotItem"):
+                    profile_plot_item = plot_widget.getPlotItem()
+
+                if profile_plot_item is not None:
+                    profile_pixmap = self._capture_plot_pixmap(
+                        profile_plot_item,
+                        capture_widget,
+                        trace_event=self._trace_event,
+                        trace_target=f"profile:{profile_id}",
+                    )
+                else:
+                    profile_pixmap = capture_widget.grab()
+                    self._trace_event(
+                        "capture_path",
+                        target=f"profile:{profile_id}",
+                        mode="widget_grab_direct",
+                        width=profile_pixmap.width(),
+                        height=profile_pixmap.height(),
+                        depth=profile_pixmap.depth(),
+                    )
             except Exception:
                 continue
 
