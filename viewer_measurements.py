@@ -57,6 +57,7 @@ class _MeasurementControllerOwner(Protocol):
     freq_axis_base_unit: str
     file_path: str
     signal: Any
+    signal: Any
 
     def _prepare_for_measurement_input(self) -> None:
         """Prepare the viewer for measurement input."""
@@ -77,6 +78,14 @@ class _MeasurementControllerOwner(Protocol):
             is_drawing: Boolean flag indicating whether drawing.
 
         """
+        ...
+
+    def _get_original_metadata_dict(self) -> Optional[dict]:
+        """Return original metadata dictionary for the current signal."""
+        ...
+
+    def grab(self) -> Any:
+        """Return a pixmap snapshot of the widget."""
         ...
 
     def _get_original_metadata_dict(self) -> Optional[dict]:
