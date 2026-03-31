@@ -1975,6 +1975,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "History": self.measurements.show_measurement_history,
             "Intensity": lambda: self._show_not_implemented("Intensity"),
             "Profile": self._menu_start_profile_measurement,
+            "Select Peaks": self._menu_start_peak_selection,
+            "Export Peaks CSV": self._menu_export_peaks_csv,
             "Metadata": self._show_metadata_window,
             "Render Diagnostics": self._show_render_diagnostics,
             "Cycle Colormap Forward": self._cycle_colormap_forward,
