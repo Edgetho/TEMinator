@@ -146,7 +146,7 @@ Other behaviour:
 
 - Images are shown in physical coordinates derived from HyperSpy metadata when available (axis scales and units).
 - A dynamic overlay scale bar is drawn for real‑space images; it automatically updates size and label with zoom.
-- Diffraction patterns are detected heuristically so measurements can be reported as d‑spacings.
+- Diffraction patterns are detected from HyperSpy metadata (`Signal.signal_type`) and original acquisition/display mode metadata (for example mode strings containing `Diffraction`) so measurements and scale bars use reciprocal units.
 
 ### Keyboard shortcuts
 

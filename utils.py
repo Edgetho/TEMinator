@@ -614,6 +614,11 @@ def open_file_dialog(
 
 
 SI_PREFIXES = [
+    (1e24, "Y"),
+    (1e21, "Z"),
+    (1e18, "E"),
+    (1e15, "P"),
+    (1e12, "T"),
     (1e9, "G"),
     (1e6, "M"),
     (1e3, "k"),
@@ -623,6 +628,9 @@ SI_PREFIXES = [
     (1e-9, "n"),
     (1e-12, "p"),
     (1e-15, "f"),
+    (1e-18, "a"),
+    (1e-21, "z"),
+    (1e-24, "y"),
 ]
 
 
@@ -684,12 +692,13 @@ def format_reciprocal_scale(value: float, axis_unit: str = "m") -> Tuple[float, 
     if to_meter is None or not np.isfinite(to_meter) or to_meter <= 0:
         to_meter = 1.0
 
-    value_in_inv_m = float(value) / float(to_meter)
+    fallback_unit = f"1/{denom_unit}" if denom_unit else "1/m"
 
     if value == 0 or not np.isfinite(value):
-        return value, "1/m"
+        return value, fallback_unit
 
-    abs_value = abs(value)
+    value_in_inv_m = float(value) / float(to_meter)
+
     best = None
 
     for factor, prefix in SI_PREFIXES:

@@ -1257,10 +1257,10 @@ class MeasurementController:
             if "d_spacing" in result:
                 return (
                     f"{prefix}d: {result['d_spacing']:.4f} Å\n"
-                    f"({scaled_dist:.4f} {scaled_unit}⁻¹)"
+                    f"({scaled_dist:.4f} {scaled_unit})"
                 )
             return (
-                f"{prefix}{scaled_dist:.4f} {scaled_unit}⁻¹\n"
+                f"{prefix}{scaled_dist:.4f} {scaled_unit}\n"
                 f"({result['distance_pixels']:.1f} px)"
             )
 

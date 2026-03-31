@@ -62,6 +62,18 @@ from viewer_settings import (
 FFT_COLORS = ["r", "g", "b", "y", "c", "m"]
 DEFAULT_IMAGE_WINDOW_SIZE = (1000, 900)
 DEFAULT_FFT_WINDOW_SIZE = (700, 700)
+RECIPROCAL_SIGNAL_TYPE_TOKENS = {"diffraction", "electron_diffraction", "fft"}
+REAL_SIGNAL_TYPE_TOKENS = {"image", "tem", "stem"}
+DIFFRACTION_MODE_TOKENS = {
+    "diffraction",
+    "electron diffraction",
+    "selected area diffraction",
+    "saed",
+    "nanodiffraction",
+    "cbed",
+    "kikuchi",
+}
+RECIPROCAL_SIGNAL_TYPE_SUBSTRINGS = {"diffraction", "fft", "kikuchi", "cbed"}
 logger = logging.getLogger(__name__)
 
 
@@ -451,6 +463,57 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
 
         return float(dx), float(dy), out_ox, out_oy
 
+    def _metadata_mode_values(self, root: Any) -> List[str]:
+        """Collect potential acquisition/display mode strings from metadata."""
+        values: List[str] = []
+
+        def _visit(node: Any) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    key_text = str(key).strip().lower().replace(" ", "")
+                    if key_text in {
+                        "mode",
+                        "displaymode",
+                        "display_mode",
+                        "imagingmode",
+                        "acquisitionmode",
+                    } and isinstance(value, str):
+                        mode_text = value.strip()
+                        if mode_text:
+                            values.append(mode_text)
+
+                    if isinstance(value, (dict, list, tuple, set)):
+                        _visit(value)
+            elif isinstance(node, (list, tuple, set)):
+                for item in node:
+                    if isinstance(item, (dict, list, tuple, set)):
+                        _visit(item)
+
+        _visit(root)
+        return values
+
+    def _metadata_mode_indicates_reciprocal(self, meta: Optional[dict]) -> bool:
+        """Return True when metadata mode text indicates reciprocal-space data."""
+        if not meta:
+            return False
+
+        for mode_value in self._metadata_mode_values(meta):
+            normalized = " ".join(mode_value.lower().split())
+            if any(token in normalized for token in DIFFRACTION_MODE_TOKENS):
+                logger.debug(
+                    "Metadata mode indicates reciprocal-space data: mode=%s",
+                    mode_value,
+                )
+                return True
+        return False
+
+    def _reciprocal_unit_from_axis_unit(self, axis_unit: Optional[str]) -> str:
+        """Build a reciprocal unit string from the indicated axis unit."""
+        normalized = unit_utils.normalize_axis_unit(axis_unit, default="m")
+        if unit_utils.is_reciprocal_unit(normalized):
+            return normalized
+        return f"1/{normalized}"
+
     def _apply_axis_calibration_values(
         self,
         dx: float,
@@ -535,8 +598,65 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return False
 
         dx, dy, ox, oy = extracted
+        units = "m"
+        if self._metadata_mode_indicates_reciprocal(meta):
+            units = self._reciprocal_unit_from_axis_unit(
+                self.ax_x.units if self.ax_x is not None else "m"
+            )
+            logger.debug(
+                "Applying reciprocal calibration units from metadata mode (%s)",
+                source,
+            )
+
+            if unit_utils.is_reciprocal_unit(units):
+                converted_dx = unit_utils.convert_distance_value(dx, "1/m", units)
+                converted_dy = unit_utils.convert_distance_value(dy, "1/m", units)
+                converted_ox = (
+                    unit_utils.convert_distance_value(ox, "1/m", units)
+                    if ox is not None
+                    else None
+                )
+                converted_oy = (
+                    unit_utils.convert_distance_value(oy, "1/m", units)
+                    if oy is not None
+                    else None
+                )
+
+                if (
+                    converted_dx is not None
+                    and converted_dy is not None
+                    and np.isfinite(converted_dx)
+                    and np.isfinite(converted_dy)
+                    and converted_dx > 0
+                    and converted_dy > 0
+                ):
+                    logger.debug(
+                        "Converted reciprocal metadata calibration to %s: "
+                        "dx=%s->%s dy=%s->%s ox=%s->%s oy=%s->%s",
+                        units,
+                        dx,
+                        converted_dx,
+                        dy,
+                        converted_dy,
+                        ox,
+                        converted_ox,
+                        oy,
+                        converted_oy,
+                    )
+                    dx = float(converted_dx)
+                    dy = float(converted_dy)
+                    if converted_ox is not None and np.isfinite(converted_ox):
+                        ox = float(converted_ox)
+                    if converted_oy is not None and np.isfinite(converted_oy):
+                        oy = float(converted_oy)
+                else:
+                    logger.debug(
+                        "Reciprocal metadata calibration conversion failed for units=%s; "
+                        "using raw metadata values",
+                        units,
+                    )
         return self._apply_axis_calibration_values(
-            dx, dy, "m", ox=ox, oy=oy, source=source
+            dx, dy, units, ox=ox, oy=oy, source=source
         )
 
     def _reload_calibration_from_file_metadata(self) -> bool:
@@ -992,21 +1112,36 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             Computed result produced by this operation.
         """
 
-        # 1) Prefer explicit HyperSpy metadata when available
+        # 1) Prefer explicit HyperSpy metadata signal_type when available
+        signal_type_hint: Optional[bool] = None
         try:
             meta = getattr(signal, "metadata", None)
             sig_meta = getattr(meta, "Signal", None)
             sig_type = getattr(sig_meta, "signal_type", None)
             if isinstance(sig_type, str):
-                st = sig_type.strip().lower()
-                if st in {"diffraction", "electron_diffraction", "fft"}:
+                st = " ".join(sig_type.strip().lower().replace("_", " ").split())
+                if (
+                    st in RECIPROCAL_SIGNAL_TYPE_TOKENS
+                    or any(token in st for token in RECIPROCAL_SIGNAL_TYPE_SUBSTRINGS)
+                ):
                     return True
-                if st in {"image", "tem", "stem"}:
-                    return False
+                if st in REAL_SIGNAL_TYPE_TOKENS:
+                    signal_type_hint = False
         except Exception:
             pass
 
-        # 2) Inspect axis unit strings for common reciprocal-space patterns
+        # 2) Original metadata Mode is authoritative when it indicates diffraction
+        try:
+            original_meta = self._get_original_metadata_dict_from_signal(signal)
+            if self._metadata_mode_indicates_reciprocal(original_meta):
+                return True
+        except Exception:
+            pass
+
+        if signal_type_hint is False:
+            return False
+
+        # 3) Inspect axis unit strings for common reciprocal-space patterns
         units_parts: list[str] = []
         try:
             ax0 = signal.axes_manager[0]
@@ -1019,7 +1154,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         if any(unit_utils.is_reciprocal_unit(part) for part in units_parts):
             return True
 
-        # 3) Default: treat as real-space image. We no longer rely on
+        # 4) Default: treat as real-space image. We no longer rely on
         # intensity-based heuristics for diffraction detection because
         # they can classify visually similar images from the same file
         # differently, leading to inconsistent scale-bar behaviour.
