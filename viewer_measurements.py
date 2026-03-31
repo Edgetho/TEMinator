@@ -9,11 +9,13 @@ from __future__ import annotations
 import csv
 from datetime import datetime
 from pathlib import Path
+import subprocess
 from typing import Any, Dict, Optional, Protocol, Tuple
 
 import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
+from scipy import ndimage, optimize
 
 import line_profile_logic
 import unit_utils
@@ -54,6 +56,7 @@ class _MeasurementControllerOwner(Protocol):
     measurement_history_window: MeasurementHistoryWindow | None
     freq_axis_base_unit: str
     file_path: str
+    signal: Any
 
     def _prepare_for_measurement_input(self) -> None:
         """Prepare the viewer for measurement input."""
@@ -76,6 +79,14 @@ class _MeasurementControllerOwner(Protocol):
         """
         ...
 
+    def _get_original_metadata_dict(self) -> Optional[dict]:
+        """Return original metadata dictionary for the current signal."""
+        ...
+
+    def grab(self) -> Any:
+        """Return a pixmap snapshot of the widget."""
+        ...
+
 
 class MeasurementController:
     """Owns measurement and line-draw interaction state for a viewer."""
@@ -90,7 +101,7 @@ class MeasurementController:
         self.viewer = viewer
         self.logger = logger
         self._peak_tool: PointSelectionTool | None = None
-        self._peak_points: list[dict[str, float]] = []
+        self._peak_points: list[dict[str, Any]] = []
         self._peak_markers: list[tuple[pg.ScatterPlotItem, pg.TextItem]] = []
 
     def _ensure_peak_tool(self) -> PointSelectionTool | None:
@@ -372,14 +383,21 @@ class MeasurementController:
             dist_px,
         )
 
+    def _image_array(self) -> np.ndarray | None:
+        """Return current image data as a finite 2D float array when possible."""
+        viewer = self.viewer
+        if viewer.data is None:
+            return None
+        image = np.asarray(viewer.data, dtype=float)
+        if image.ndim != 2 or image.shape[0] < 3 or image.shape[1] < 3:
+            return None
+        return image
+
     def _map_view_point_to_pixel(self, point: Tuple[float, float]) -> Tuple[float, float]:
         """Map a view-space point to image pixel coordinates."""
         viewer = self.viewer
-        if viewer.data is None:
-            return float(point[0]), float(point[1])
-
-        image = np.asarray(viewer.data)
-        if image.ndim != 2 or image.shape[0] < 1 or image.shape[1] < 1:
+        image = self._image_array()
+        if image is None:
             return float(point[0]), float(point[1])
 
         width = int(image.shape[1])
@@ -427,12 +445,213 @@ class MeasurementController:
         y_px = float(np.clip(y_px, 0.0, float(height - 1)))
         return x_px, y_px
 
+    def _map_pixel_to_view(self, x_px: float, y_px: float) -> Tuple[float, float]:
+        """Map a pixel coordinate back to the viewer coordinate system."""
+        viewer = self.viewer
+        image = self._image_array()
+        if image is None:
+            return x_px, y_px
+
+        width = int(image.shape[1])
+        height = int(image.shape[0])
+        image_item = getattr(viewer, "img_orig", None)
+
+        if image_item is not None and hasattr(image_item, "rect"):
+            try:
+                image_rect = image_item.rect()
+                if width > 1 and height > 1:
+                    x_view = float(image_rect.left()) + (
+                        float(x_px) * float(image_rect.width()) / float(width - 1)
+                    )
+                    y_view = float(image_rect.top()) + (
+                        float(y_px) * float(image_rect.height()) / float(height - 1)
+                    )
+                    return x_view, y_view
+            except Exception:
+                pass
+
+        if viewer.ax_x is not None and viewer.ax_y is not None:
+            try:
+                x_view = float(viewer.ax_x.offset) + float(x_px) * float(viewer.ax_x.scale)
+                y_view = float(viewer.ax_y.offset) + float(y_px) * float(viewer.ax_y.scale)
+                return x_view, y_view
+            except Exception:
+                pass
+
+        return x_px, y_px
+
+    @staticmethod
+    def _gaussian2d_mesh(
+        xy: tuple[np.ndarray, np.ndarray],
+        amplitude: float,
+        x0: float,
+        y0: float,
+        sigma_x: float,
+        sigma_y: float,
+        offset: float,
+    ) -> np.ndarray:
+        """Evaluate an axis-aligned 2D Gaussian on mesh coordinates."""
+        xx, yy = xy
+        exponent = -(
+            ((xx - x0) ** 2) / (2.0 * sigma_x * sigma_x)
+            + ((yy - y0) ** 2) / (2.0 * sigma_y * sigma_y)
+        )
+        return offset + amplitude * np.exp(exponent)
+
+    def _fit_gaussian_peak(
+        self,
+        image: np.ndarray,
+        peak_x_px: int,
+        peak_y_px: int,
+        fit_radius: int = 6,
+    ) -> dict[str, Any]:
+        """Fit a 2D Gaussian around a candidate peak pixel."""
+        height, width = image.shape
+        x_min = max(0, int(peak_x_px) - fit_radius)
+        x_max = min(width - 1, int(peak_x_px) + fit_radius)
+        y_min = max(0, int(peak_y_px) - fit_radius)
+        y_max = min(height - 1, int(peak_y_px) + fit_radius)
+
+        patch = image[y_min : y_max + 1, x_min : x_max + 1]
+        yy, xx = np.mgrid[y_min : y_max + 1, x_min : x_max + 1]
+
+        finite_patch = np.asarray(patch, dtype=float)
+        if not np.isfinite(finite_patch).any():
+            return {
+                "fit_success": False,
+                "center_x_px": float(peak_x_px),
+                "center_y_px": float(peak_y_px),
+                "amplitude": float("nan"),
+                "offset": float("nan"),
+                "sigma_x_px": float("nan"),
+                "sigma_y_px": float("nan"),
+                "fwhm_x_px": float("nan"),
+                "fwhm_y_px": float("nan"),
+                "r2": float("nan"),
+                "fit_window_radius_px": int(fit_radius),
+            }
+
+        patch_min = float(np.nanmin(finite_patch))
+        patch_max = float(np.nanmax(finite_patch))
+        amp_guess = max(1e-12, patch_max - patch_min)
+        offset_guess = patch_min
+        sigma_guess = max(1.0, float(fit_radius) / 2.0)
+
+        p0 = [
+            amp_guess,
+            float(peak_x_px),
+            float(peak_y_px),
+            sigma_guess,
+            sigma_guess,
+            offset_guess,
+        ]
+        lower = [0.0, float(x_min), float(y_min), 0.4, 0.4, -np.inf]
+        upper = [np.inf, float(x_max), float(y_max), 20.0, 20.0, np.inf]
+
+        try:
+            params, _ = optimize.curve_fit(
+                self._gaussian2d_mesh,
+                (xx.ravel(), yy.ravel()),
+                finite_patch.ravel(),
+                p0=p0,
+                bounds=(lower, upper),
+                maxfev=12000,
+            )
+            amp, cx, cy, sx, sy, off = [float(v) for v in params]
+            model = self._gaussian2d_mesh((xx, yy), amp, cx, cy, sx, sy, off)
+            residual = finite_patch - model
+            ss_res = float(np.sum(residual * residual))
+            centered = finite_patch - float(np.mean(finite_patch))
+            ss_tot = float(np.sum(centered * centered))
+            r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+            return {
+                "fit_success": True,
+                "center_x_px": cx,
+                "center_y_px": cy,
+                "amplitude": amp,
+                "offset": off,
+                "sigma_x_px": abs(sx),
+                "sigma_y_px": abs(sy),
+                "fwhm_x_px": 2.354820045 * abs(sx),
+                "fwhm_y_px": 2.354820045 * abs(sy),
+                "r2": r2,
+                "fit_window_radius_px": int(fit_radius),
+            }
+        except Exception:
+            return {
+                "fit_success": False,
+                "center_x_px": float(peak_x_px),
+                "center_y_px": float(peak_y_px),
+                "amplitude": float("nan"),
+                "offset": float("nan"),
+                "sigma_x_px": float("nan"),
+                "sigma_y_px": float("nan"),
+                "fwhm_x_px": float("nan"),
+                "fwhm_y_px": float("nan"),
+                "r2": float("nan"),
+                "fit_window_radius_px": int(fit_radius),
+            }
+
+    def _snap_click_to_nearest_peak(
+        self,
+        image: np.ndarray,
+        click_x_px: float,
+        click_y_px: float,
+        search_radius: int = 14,
+    ) -> tuple[int, int]:
+        """Find nearest local-maximum pixel to the click position."""
+        height, width = image.shape
+        x0 = int(np.clip(round(click_x_px), 0, width - 1))
+        y0 = int(np.clip(round(click_y_px), 0, height - 1))
+
+        x_min = max(0, x0 - search_radius)
+        x_max = min(width - 1, x0 + search_radius)
+        y_min = max(0, y0 - search_radius)
+        y_max = min(height - 1, y0 + search_radius)
+
+        patch = image[y_min : y_max + 1, x_min : x_max + 1]
+        if patch.size == 0:
+            return x0, y0
+
+        finite_patch = np.asarray(patch, dtype=float)
+        if not np.isfinite(finite_patch).any():
+            return x0, y0
+
+        local_max = ndimage.maximum_filter(finite_patch, size=3, mode="nearest")
+        maxima_mask = np.isfinite(finite_patch) & (finite_patch == local_max)
+        candidates = np.argwhere(maxima_mask)
+        if candidates.size == 0:
+            best_rel = np.unravel_index(np.nanargmax(finite_patch), finite_patch.shape)
+            return int(x_min + best_rel[1]), int(y_min + best_rel[0])
+
+        click_rel_x = float(click_x_px - x_min)
+        click_rel_y = float(click_y_px - y_min)
+        d2 = (candidates[:, 1] - click_rel_x) ** 2 + (candidates[:, 0] - click_rel_y) ** 2
+        nearest_idx = int(np.argmin(d2))
+        nearest_rc = candidates[nearest_idx]
+        return int(x_min + nearest_rc[1]), int(y_min + nearest_rc[0])
+
     def on_peak_selected(self, point: Tuple[float, float]) -> None:
         """Handle a newly selected peak point."""
         viewer = self.viewer
-        x_view = float(point[0])
-        y_view = float(point[1])
-        x_px, y_px = self._map_view_point_to_pixel(point)
+        image = self._image_array()
+        if image is None:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Peak Selection",
+                "Peak selection requires a 2D image.",
+            )
+            return
+
+        click_x_px, click_y_px = self._map_view_point_to_pixel(point)
+        peak_x_px, peak_y_px = self._snap_click_to_nearest_peak(
+            image, click_x_px, click_y_px
+        )
+        fit = self._fit_gaussian_peak(image, peak_x_px, peak_y_px)
+
+        center_x_px = float(fit.get("center_x_px", peak_x_px))
+        center_y_px = float(fit.get("center_y_px", peak_y_px))
+        x_view, y_view = self._map_pixel_to_view(center_x_px, center_y_px)
 
         peak_index = len(self._peak_points) + 1
 
@@ -459,19 +678,35 @@ class MeasurementController:
         self._peak_points.append(
             {
                 "index": float(peak_index),
+                "click_x_px": float(click_x_px),
+                "click_y_px": float(click_y_px),
                 "x_view": x_view,
                 "y_view": y_view,
-                "x_px": x_px,
-                "y_px": y_px,
+                "x_px": center_x_px,
+                "y_px": center_y_px,
+                "nearest_local_max_x_px": float(peak_x_px),
+                "nearest_local_max_y_px": float(peak_y_px),
+                "fit_success": bool(fit.get("fit_success", False)),
+                "gaussian_amplitude": float(fit.get("amplitude", float("nan"))),
+                "gaussian_offset": float(fit.get("offset", float("nan"))),
+                "gaussian_sigma_x_px": float(fit.get("sigma_x_px", float("nan"))),
+                "gaussian_sigma_y_px": float(fit.get("sigma_y_px", float("nan"))),
+                "gaussian_fwhm_x_px": float(fit.get("fwhm_x_px", float("nan"))),
+                "gaussian_fwhm_y_px": float(fit.get("fwhm_y_px", float("nan"))),
+                "gaussian_fit_r2": float(fit.get("r2", float("nan"))),
+                "gaussian_fit_window_radius_px": int(
+                    fit.get("fit_window_radius_px", 0)
+                ),
             }
         )
         self.logger.debug(
-            "Peak selected: index=%s x_view=%.6g y_view=%.6g x_px=%.6g y_px=%.6g",
+            "Peak selected: index=%s click_px=(%.3f,%.3f) snapped_px=(%.3f,%.3f) fit_success=%s",
             peak_index,
-            x_view,
-            y_view,
-            x_px,
-            y_px,
+            click_x_px,
+            click_y_px,
+            center_x_px,
+            center_y_px,
+            bool(fit.get("fit_success", False)),
         )
 
     def clear_selected_peaks(self) -> None:
@@ -523,61 +758,93 @@ class MeasurementController:
             return
 
         rows: list[dict[str, Any]] = []
-        prev_peak: dict[str, float] | None = None
+
+        scale_x = float(viewer.ax_x.scale) if viewer.ax_x is not None else float("nan")
+        scale_y = float(viewer.ax_y.scale) if viewer.ax_y is not None else float("nan")
+
+        def px_to_cal(x_px: float, y_px: float) -> tuple[float, float]:
+            return self._map_pixel_to_view(float(x_px), float(y_px))
+
         for peak in self._peak_points:
-            dx_px = dy_px = spacing_px = ""
-            dx_world = dy_world = spacing_world = ""
-
-            if prev_peak is not None:
-                dx_px_val = float(peak["x_px"] - prev_peak["x_px"])
-                dy_px_val = float(peak["y_px"] - prev_peak["y_px"])
-                spacing_px_val = float(np.hypot(dx_px_val, dy_px_val))
-                dx_world_val = float(peak["x_view"] - prev_peak["x_view"])
-                dy_world_val = float(peak["y_view"] - prev_peak["y_view"])
-                spacing_world_val = float(np.hypot(dx_world_val, dy_world_val))
-
-                dx_px = f"{dx_px_val:.12g}"
-                dy_px = f"{dy_px_val:.12g}"
-                spacing_px = f"{spacing_px_val:.12g}"
-                dx_world = f"{dx_world_val:.12g}"
-                dy_world = f"{dy_world_val:.12g}"
-                spacing_world = f"{spacing_world_val:.12g}"
+            x_cal, y_cal = px_to_cal(float(peak["x_px"]), float(peak["y_px"]))
+            nearest_x_cal, nearest_y_cal = px_to_cal(
+                float(peak["nearest_local_max_x_px"]),
+                float(peak["nearest_local_max_y_px"]),
+            )
+            sigma_x_cal = (
+                float(peak["gaussian_sigma_x_px"]) * scale_x
+                if np.isfinite(float(peak["gaussian_sigma_x_px"])) and np.isfinite(scale_x)
+                else float("nan")
+            )
+            sigma_y_cal = (
+                float(peak["gaussian_sigma_y_px"]) * scale_y
+                if np.isfinite(float(peak["gaussian_sigma_y_px"])) and np.isfinite(scale_y)
+                else float("nan")
+            )
 
             rows.append(
                 {
                     "peak_index": int(peak["index"]),
-                    "x_view": f"{peak['x_view']:.12g}",
-                    "y_view": f"{peak['y_view']:.12g}",
-                    "x_pixel": f"{peak['x_px']:.12g}",
-                    "y_pixel": f"{peak['y_px']:.12g}",
-                    "delta_x_pixels_from_previous": dx_px,
-                    "delta_y_pixels_from_previous": dy_px,
-                    "pixel_spacing_from_previous": spacing_px,
-                    "delta_x_calibrated_from_previous": dx_world,
-                    "delta_y_calibrated_from_previous": dy_world,
-                    "calibrated_distance_from_previous": spacing_world,
-                    "calibrated_distance_units": units_label,
+                    "x_px": f"{float(peak['x_px']):.12g}",
+                    "y_px": f"{float(peak['y_px']):.12g}",
+                    "x_cal": f"{x_cal:.12g}",
+                    "y_cal": f"{y_cal:.12g}",
+                    "nearest_x_px": f"{float(peak['nearest_local_max_x_px']):.12g}",
+                    "nearest_y_px": f"{float(peak['nearest_local_max_y_px']):.12g}",
+                    "nearest_x_cal": f"{nearest_x_cal:.12g}",
+                    "nearest_y_cal": f"{nearest_y_cal:.12g}",
+                    "gaussian_sigma_y_px": f"{float(peak['gaussian_sigma_y_px']):.12g}",
+                    "gaussian_sigma_x_px": f"{float(peak['gaussian_sigma_x_px']):.12g}",
+                    "gaussian_sigma_y_cal": f"{sigma_y_cal:.12g}",
+                    "gaussian_sigma_x_cal": f"{sigma_x_cal:.12g}",
+                    "gaussian_goodness_of_fit": f"{float(peak['gaussian_fit_r2']):.12g}",
                 }
             )
-            prev_peak = peak
 
         headers = [
             "peak_index",
-            "x_view",
-            "y_view",
-            "x_pixel",
-            "y_pixel",
-            "delta_x_pixels_from_previous",
-            "delta_y_pixels_from_previous",
-            "pixel_spacing_from_previous",
-            "delta_x_calibrated_from_previous",
-            "delta_y_calibrated_from_previous",
-            "calibrated_distance_from_previous",
-            "calibrated_distance_units",
+            "x_px",
+            "y_px",
+            "x_cal",
+            "y_cal",
+            "nearest_x_px",
+            "nearest_y_px",
+            "nearest_x_cal",
+            "nearest_y_cal",
+            "gaussian_sigma_y_px",
+            "gaussian_sigma_x_px",
+            "gaussian_sigma_y_cal",
+            "gaussian_sigma_x_cal",
+            "gaussian_goodness_of_fit",
+        ]
+
+        repo_root = Path(__file__).resolve().parent
+        git_hash = "unknown"
+        try:
+            git_hash = (
+                subprocess.check_output(
+                    ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                )
+                .strip()
+                .strip("\n")
+            )
+        except Exception:
+            git_hash = "unknown"
+
+        metadata_header_lines = [
+            f"# teminator_version_git_hash,{git_hash}",
+            f"# export_timestamp_iso,{datetime.now().isoformat()}",
+            f"# source_file,{viewer.file_path}",
+            f"# distance_units,{units_label}",
+            "",
         ]
 
         try:
             with open(selected_path, "w", newline="", encoding="utf-8") as csv_file:
+                for line in metadata_header_lines:
+                    csv_file.write(f"{line}\n")
                 writer = csv.DictWriter(csv_file, fieldnames=headers)
                 writer.writeheader()
                 writer.writerows(rows)
@@ -590,16 +857,51 @@ class MeasurementController:
             )
             return
 
+        csv_path = Path(selected_path)
+        png_path = csv_path.with_suffix(".png")
+        png_saved = False
+        png_error: str | None = None
+        try:
+            capture_widget = getattr(viewer, "glw", None)
+            if capture_widget is not None and hasattr(capture_widget, "grab"):
+                pixmap = capture_widget.grab()
+            else:
+                pixmap = viewer.grab()
+
+            png_saved = bool(pixmap.save(str(png_path), "PNG"))
+            if not png_saved:
+                png_error = "Qt could not encode PNG output."
+        except Exception as exc:
+            png_saved = False
+            png_error = str(exc)
+
         self.logger.debug(
             "Exported peaks CSV: path=%s peaks=%s",
             selected_path,
             len(self._peak_points),
         )
-        QtWidgets.QMessageBox.information(
-            viewer,
-            "Export Peaks CSV",
-            f"Exported {len(self._peak_points)} peaks to:\n{selected_path}",
-        )
+        if png_saved:
+            self.logger.debug("Exported peaks view PNG: path=%s", str(png_path))
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Export Peaks CSV",
+                (
+                    f"Exported {len(self._peak_points)} peaks to:\n{selected_path}\n\n"
+                    f"Exported current labeled view to:\n{png_path}"
+                ),
+            )
+        else:
+            if png_error:
+                self.logger.debug("Failed to export peaks view PNG: %s", png_error)
+            QtWidgets.QMessageBox.warning(
+                viewer,
+                "Export Peaks CSV",
+                (
+                    f"Exported {len(self._peak_points)} peaks to:\n{selected_path}\n\n"
+                    "Could not export PNG view snapshot."
+                    + (f"\nReason: {png_error}" if png_error else "")
+                ),
+            )
 
     def on_measurement_label_clicked(self, label: pg.TextItem) -> None:
         """Handle a measurement label being clicked.

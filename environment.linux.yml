@@ -4,6 +4,7 @@ channels:
 dependencies:
     - python=3.14.*
     - numpy>=2.0
+    - scipy
     - pyqtgraph
     - pyqt=5.15.*
     - qt-wayland
