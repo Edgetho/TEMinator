@@ -18,8 +18,14 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
+from eds_metadata import build_eds_metadata_context, coerce_float, first_present_number
 from eds_models import EDSCapabilityState, EDSMetadataContext, EDSROIRegion
-from eds_quantification import EDSQuantificationService, QuantificationRequest
+from eds_quantification import (
+    EDS_CSV_HEADER,
+    EDSQuantificationService,
+    QuantificationRequest,
+    quant_rows_to_csv_records,
+)
 from types_common import LoggerLike
 
 
@@ -374,117 +380,25 @@ class SpectrumAnalysisManager:
     @staticmethod
     def _coerce_float(value: Any) -> Optional[float]:
         """Attempt numeric conversion, returning None for invalid values."""
-        try:
-            if value is None:
-                return None
-            return float(value)
-        except (TypeError, ValueError):
-            return None
+        return coerce_float(value)
 
     @staticmethod
     def _first_present_number(candidates: Sequence[Any]) -> Optional[float]:
         """Return the first valid numeric value found in candidates."""
-        for value in candidates:
-            converted = SpectrumAnalysisManager._coerce_float(value)
-            if converted is not None:
-                return converted
-        return None
+        return first_present_number(candidates)
 
     def _build_metadata_context(self, meta: Dict[str, Any]) -> EDSMetadataContext:
         """Resolve EDS calibration/timing metadata using a fallback hierarchy."""
-        def _extract_custom_property_numeric(key_suffix: str) -> Optional[float]:
-            custom_props = meta.get("CustomProperties", {})
-            if not isinstance(custom_props, dict):
-                return None
-            for key, entry in custom_props.items():
-                if not isinstance(key, str):
-                    continue
-                if not key.endswith(key_suffix):
-                    continue
-                if isinstance(entry, dict) and "value" in entry:
-                    value = self._coerce_float(entry.get("value"))
-                else:
-                    value = self._coerce_float(entry)
-                if value is not None:
-                    return value
-            return None
-
         mapped_meta = getattr(self.viewer.signal, "metadata", None)
-        mapped_sample: Dict[str, Any] = {}
-        mapped_tem: Dict[str, Any] = {}
+        mapped_dict: Dict[str, Any] = {}
         if mapped_meta is not None:
             try:
-                if "Sample" in mapped_meta:
-                    mapped_sample = dict(mapped_meta["Sample"])
+                mapped_dict = dict(mapped_meta.as_dictionary()) if hasattr(mapped_meta, "as_dictionary") else dict(mapped_meta)
             except Exception:
-                mapped_sample = {}
-            try:
-                if "Acquisition_instrument" in mapped_meta and "TEM" in mapped_meta["Acquisition_instrument"]:
-                    mapped_tem = dict(mapped_meta["Acquisition_instrument"]["TEM"])
-            except Exception:
-                mapped_tem = {}
-
-        original_tem = meta.get("Acquisition_instrument", {}).get("TEM", {})
-        beam_energy_ev = self._first_present_number(
-            [
-                mapped_tem.get("beam_energy"),
-                original_tem.get("beam_energy"),
-                meta.get("Acquisition", {}).get("BeamEnergy"),
-            ]
-        )
-
-        dispersion_ev_per_channel = None
-        offset_ev = None
-        begin_energy_ev = None
-        live_time_s = None
-        real_time_s = None
-        detectors = meta.get("Detectors", {})
-        if isinstance(detectors, dict):
-            for det_info in detectors.values():
-                if not isinstance(det_info, dict):
-                    continue
-                if det_info.get("DetectorType") != "AnalyticalDetector":
-                    continue
-                if dispersion_ev_per_channel is None:
-                    dispersion_ev_per_channel = self._coerce_float(det_info.get("Dispersion"))
-                if offset_ev is None:
-                    offset_ev = self._coerce_float(det_info.get("OffsetEnergy"))
-                if begin_energy_ev is None:
-                    begin_energy_ev = self._coerce_float(det_info.get("BeginEnergy"))
-                if live_time_s is None:
-                    live_time_s = self._coerce_float(det_info.get("LiveTime"))
-                if real_time_s is None:
-                    real_time_s = self._coerce_float(det_info.get("RealTime"))
-
-        # Fallbacks from vendor custom properties when detector records are incomplete.
-        if dispersion_ev_per_channel is None:
-            dispersion_ev_per_channel = _extract_custom_property_numeric(".Dispersion")
-        if begin_energy_ev is None:
-            begin_energy_ev = _extract_custom_property_numeric(".SpectrumBeginEnergy")
-        if live_time_s is None:
-            live_time_s = _extract_custom_property_numeric(".LiveTime")
-        if real_time_s is None:
-            real_time_s = _extract_custom_property_numeric(".RealTime")
-
-        # Prefer explicit offset; otherwise use detector begin energy as channel-0 anchor.
-        if offset_ev is None and begin_energy_ev is not None:
-            offset_ev = begin_energy_ev
-
-        xray_lines: List[str] = []
-        lines_from_mapped = mapped_sample.get("xray_lines", [])
-        lines_from_original = meta.get("Sample", {}).get("xray_lines", [])
-        for candidate in (lines_from_mapped, lines_from_original):
-            if isinstance(candidate, list) and candidate:
-                xray_lines = [str(line) for line in candidate]
-                break
-
-        return EDSMetadataContext(
-            beam_energy_ev=beam_energy_ev,
-            dispersion_ev_per_channel=dispersion_ev_per_channel,
-            offset_ev=offset_ev,
-            live_time_s=live_time_s,
-            real_time_s=real_time_s,
-            xray_lines=xray_lines,
+                mapped_dict = {}
+        return build_eds_metadata_context(
+            original_meta=meta,
+            mapped_meta=mapped_dict,
         )
 
     def _load_element_colors_from_metadata(self, meta: Dict[str, Any]) -> None:
@@ -1685,29 +1599,9 @@ class SpectrumAnalysisManager:
         try:
             with path.open("w", newline="", encoding="utf-8") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(
-                    [
-                        "region_id",
-                        "element",
-                        "counts",
-                        "weight_percent",
-                        "atomic_percent",
-                        "method",
-                        "warnings",
-                    ]
-                )
-                for row in rows:
-                    writer.writerow(
-                        [
-                            row.region_id,
-                            row.element,
-                            f"{row.counts:.12g}",
-                            "" if row.weight_percent is None else f"{row.weight_percent:.12g}",
-                            "" if row.atomic_percent is None else f"{row.atomic_percent:.12g}",
-                            row.method,
-                            " | ".join(row.warnings),
-                        ]
-                    )
+                writer.writerow(list(EDS_CSV_HEADER))
+                for record in quant_rows_to_csv_records(rows):
+                    writer.writerow([record[column] for column in EDS_CSV_HEADER])
             return True
         except Exception as exc:
             self.logger.warning("Failed to write EDS CSV %s: %s", path, exc)

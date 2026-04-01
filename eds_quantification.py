@@ -12,6 +12,35 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from eds_models import EDSQuantResultRow
 
 
+EDS_CSV_HEADER: Tuple[str, ...] = (
+    "region_id",
+    "element",
+    "counts",
+    "weight_percent",
+    "atomic_percent",
+    "method",
+    "warnings",
+)
+
+
+def quant_rows_to_csv_records(rows: Sequence[EDSQuantResultRow]) -> List[Dict[str, str]]:
+    """Serialize quant rows into CSV-ready string records with stable schema."""
+    records: List[Dict[str, str]] = []
+    for row in rows:
+        records.append(
+            {
+                "region_id": str(row.region_id),
+                "element": row.element,
+                "counts": f"{row.counts:.12g}",
+                "weight_percent": "" if row.weight_percent is None else f"{row.weight_percent:.12g}",
+                "atomic_percent": "" if row.atomic_percent is None else f"{row.atomic_percent:.12g}",
+                "method": row.method,
+                "warnings": " | ".join(row.warnings),
+            }
+        )
+    return records
+
+
 @dataclass(frozen=True)
 class QuantificationRequest:
     """Input contract for region-level quantification."""
