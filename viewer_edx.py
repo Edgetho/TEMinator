@@ -141,6 +141,9 @@ class SpectrumAnalysisManager:
         self.maps_list: Optional[QtWidgets.QListWidget] = None
         self.results_table: Optional[QtWidgets.QTableWidget] = None
         self.hover_status_label: Optional[QtWidgets.QLabel] = None
+        self.model_status_label: Optional[QtWidgets.QLabel] = None
+        self.model_fit_btn: Optional[QtWidgets.QPushButton] = None
+        self.model_fit_bg_btn: Optional[QtWidgets.QPushButton] = None
         self.quant_method_combo: Optional[QtWidgets.QComboBox] = None
         self.quant_units_combo: Optional[QtWidgets.QComboBox] = None
         self.quant_factors_edit: Optional[QtWidgets.QLineEdit] = None
@@ -900,6 +903,20 @@ class SpectrumAnalysisManager:
         windows_layout.addRow("Half-width (eV):", self.integration_width_edit)
         layout.addWidget(windows_group)
 
+        model_group = QtWidgets.QGroupBox("Model Fitting")
+        model_layout = QtWidgets.QHBoxLayout(model_group)
+        self.model_fit_bg_btn = QtWidgets.QPushButton("Fit Background")
+        self.model_fit_bg_btn.clicked.connect(self._on_model_fit_background_clicked)
+        model_layout.addWidget(self.model_fit_bg_btn)
+        self.model_fit_btn = QtWidgets.QPushButton("Run Model Fit")
+        self.model_fit_btn.clicked.connect(self._on_model_fit_clicked)
+        model_layout.addWidget(self.model_fit_btn)
+        layout.addWidget(model_group)
+
+        self.model_status_label = QtWidgets.QLabel("Model fit idle.")
+        self.model_status_label.setWordWrap(True)
+        layout.addWidget(self.model_status_label)
+
         # Energy calibration info
         calib_info = QtWidgets.QLabel(
             f"Calibration: {self._calibration_source}\n"
@@ -1221,6 +1238,103 @@ class SpectrumAnalysisManager:
                 self.spectrum_plot.addItem(left)
                 self.spectrum_plot.addItem(right)
                 self._window_overlay_items.extend([left, right])
+
+    def _get_model_input_spectrum(self) -> Tuple[Optional[str], Optional[np.ndarray], Optional[np.ndarray]]:
+        """Return (name, counts_1d, energy_axis_eV) for model fitting."""
+        candidate_names = list(self.active_spectra) if self.active_spectra else list(self.spectra.keys())
+        for name in candidate_names:
+            arr = self.spectra.get(name)
+            if arr is None:
+                continue
+            data = np.asarray(arr, dtype=float)
+            if data.ndim == 1:
+                counts = data
+            else:
+                try:
+                    counts = np.nanmean(data.reshape((-1, data.shape[-1])), axis=0)
+                except Exception:
+                    continue
+            if counts.size == 0:
+                continue
+            energy = self.spectrum_energy_axes.get(name)
+            if energy is None or energy.shape[0] != counts.shape[0]:
+                energy = self.spectrum_offset + np.arange(counts.shape[0], dtype=float) * self.spectrum_dispersion
+            return name, counts.astype(float), energy.astype(float)
+        return None, None, None
+
+    def _selected_elements_for_model(self) -> List[str]:
+        """Resolve unique element symbols used for model setup."""
+        elements: set[str] = set()
+        for label in self.integration_settings.included_lines:
+            if "_" in label:
+                token = label.split("_", 1)[0].strip()
+                if token:
+                    elements.add(token)
+        for element in self.elemental_maps.keys():
+            token = str(element).split()[0].strip()
+            if token:
+                elements.add(token)
+        return sorted(elements)
+
+    def _build_hyperspy_eds_signal(self, counts: np.ndarray, energy_ev: np.ndarray) -> Any:
+        """Create a HyperSpy Signal1D configured for EDS model fitting."""
+        import hyperspy.api as hs
+
+        signal = hs.signals.Signal1D(counts)
+        axis = signal.axes_manager[-1]
+        axis.name = "E"
+        axis.units = "eV"
+        if energy_ev.size >= 2:
+            axis.scale = float(energy_ev[1] - energy_ev[0])
+            axis.offset = float(energy_ev[0])
+        signal.set_signal_type("EDS_TEM")
+
+        elements = self._selected_elements_for_model()
+        if elements:
+            try:
+                signal.set_elements(elements)
+                signal.add_lines()
+            except Exception:
+                pass
+        return signal
+
+    def _on_model_fit_background_clicked(self) -> None:
+        """Run HyperSpy EDS background fit on the selected spectrum."""
+        name, counts, energy_ev = self._get_model_input_spectrum()
+        if counts is None or energy_ev is None:
+            if self.model_status_label is not None:
+                self.model_status_label.setText("Model fit unavailable: no spectrum selected.")
+            return
+        try:
+            signal = self._build_hyperspy_eds_signal(counts, energy_ev)
+            model = signal.create_model()
+            model.fit_background()
+            self.spectrum_metadata.setdefault(name or "spectrum", {})["last_model"] = model
+            if self.model_status_label is not None:
+                self.model_status_label.setText(f"Background fit complete for {name}.")
+        except Exception as exc:
+            if self.model_status_label is not None:
+                self.model_status_label.setText(f"Background fit failed: {type(exc).__name__}: {exc}")
+
+    def _on_model_fit_clicked(self) -> None:
+        """Run HyperSpy EDS model fit and store line intensity summary."""
+        name, counts, energy_ev = self._get_model_input_spectrum()
+        if counts is None or energy_ev is None:
+            if self.model_status_label is not None:
+                self.model_status_label.setText("Model fit unavailable: no spectrum selected.")
+            return
+        try:
+            signal = self._build_hyperspy_eds_signal(counts, energy_ev)
+            model = signal.create_model()
+            model.fit_background()
+            model.fit()
+            result = model.get_lines_intensity()
+            self.spectrum_metadata.setdefault(name or "spectrum", {})["last_fit_result"] = result
+            if self.model_status_label is not None:
+                self.model_status_label.setText(f"Model fit complete for {name}.")
+        except Exception as exc:
+            if self.model_status_label is not None:
+                self.model_status_label.setText(f"Model fit failed: {type(exc).__name__}: {exc}")
 
     def _on_element_checkbox_changed(self, element: str, state: int) -> None:
         """Handle elemental map visibility toggle.
@@ -1729,7 +1843,11 @@ class SpectrumAnalysisManager:
         return r0, r1 + 1, c0, c1 + 1
 
     def _compute_region_element_counts(self, region: EDSROIRegion) -> List[Tuple[str, float]]:
-        """Compute simple integrated counts from elemental maps within region."""
+        """Compute integrated counts from spectra when available, else elemental maps."""
+        spectral_rows = self._compute_region_line_counts_from_spectra(region)
+        if spectral_rows:
+            return spectral_rows
+
         bounds = self._region_bounds_in_pixels(region)
         if bounds is None:
             return []
@@ -1748,6 +1866,76 @@ class SpectrumAnalysisManager:
             counts = float(np.nansum(arr[r0:r1c, c0:c1c]))
             rows.append((element, counts))
         return rows
+
+    def _compute_region_line_counts_from_spectra(
+        self,
+        region: EDSROIRegion,
+    ) -> List[Tuple[str, float]]:
+        """Integrate per-element counts from spectral cubes using selected windows."""
+        bounds = self._region_bounds_in_pixels(region)
+        if bounds is None:
+            return []
+
+        r0, r1, c0, c1 = bounds
+        candidate_names = list(self.active_spectra) if self.active_spectra else list(self.spectra.keys())
+        cube_name: Optional[str] = None
+        cube_data: Optional[np.ndarray] = None
+        for name in candidate_names:
+            arr = self.spectra.get(name)
+            if arr is None:
+                continue
+            data = np.asarray(arr)
+            if data.ndim != 3:
+                continue
+            if r0 >= data.shape[0] or c0 >= data.shape[1]:
+                continue
+            cube_name = name
+            cube_data = data
+            break
+
+        if cube_data is None or cube_name is None:
+            return []
+
+        r1c = min(r1, cube_data.shape[0])
+        c1c = min(c1, cube_data.shape[1])
+        if r0 >= r1c or c0 >= c1c:
+            return []
+
+        region_cube = np.asarray(cube_data[r0:r1c, c0:c1c, :], dtype=float)
+        spectrum = np.nansum(region_cube, axis=(0, 1))
+        energy = self.spectrum_energy_axes.get(cube_name)
+        if energy is None or energy.shape[0] != spectrum.shape[0]:
+            energy = self.spectrum_offset + np.arange(spectrum.shape[0], dtype=float) * self.spectrum_dispersion
+
+        windows = list(self.integration_settings.integration_windows_ev)
+        lines = list(self.integration_settings.included_lines)
+        if not windows or not lines or len(windows) != len(lines):
+            return []
+
+        by_element: Dict[str, float] = {}
+        for (low_ev, high_ev), line_label in zip(windows, lines):
+            mask = (energy >= low_ev) & (energy <= high_ev)
+            if not np.any(mask):
+                continue
+            signal_counts = float(np.nansum(spectrum[mask]))
+            if self.integration_settings.background_mode == "auto":
+                width = max(float(high_ev - low_ev), 1.0)
+                pad = 0.25 * width
+                left_mask = (energy >= (low_ev - width - pad)) & (energy <= (low_ev - pad))
+                right_mask = (energy >= (high_ev + pad)) & (energy <= (high_ev + width + pad))
+                background_samples: List[float] = []
+                if np.any(left_mask):
+                    background_samples.append(float(np.nanmean(spectrum[left_mask])))
+                if np.any(right_mask):
+                    background_samples.append(float(np.nanmean(spectrum[right_mask])))
+                if background_samples:
+                    bg_level = float(np.nanmean(np.asarray(background_samples)))
+                    signal_counts = max(0.0, signal_counts - bg_level * int(np.count_nonzero(mask)))
+
+            element = str(line_label).split("_", 1)[0]
+            by_element[element] = by_element.get(element, 0.0) + signal_counts
+
+        return sorted(by_element.items(), key=lambda kv: kv[0])
 
     def _current_quant_method(self) -> str:
         """Return active quantification method from UI."""
