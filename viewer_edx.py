@@ -140,6 +140,7 @@ class SpectrumAnalysisManager:
         self.spectrum_plot: Optional[pg.PlotItem] = None
         self.maps_list: Optional[QtWidgets.QListWidget] = None
         self.results_table: Optional[QtWidgets.QTableWidget] = None
+        self.model_results_table: Optional[QtWidgets.QTableWidget] = None
         self.hover_status_label: Optional[QtWidgets.QLabel] = None
         self.model_status_label: Optional[QtWidgets.QLabel] = None
         self.model_fit_btn: Optional[QtWidgets.QPushButton] = None
@@ -1044,6 +1045,17 @@ class SpectrumAnalysisManager:
         self.results_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.results_table, 1)
 
+        model_results_group = QtWidgets.QGroupBox("Model Fit Intensities")
+        model_results_layout = QtWidgets.QVBoxLayout(model_results_group)
+        self.model_results_table = QtWidgets.QTableWidget()
+        self.model_results_table.setColumnCount(3)
+        self.model_results_table.setHorizontalHeaderLabels(
+            ["Spectrum", "Line", "Intensity"]
+        )
+        self.model_results_table.horizontalHeader().setStretchLastSection(True)
+        model_results_layout.addWidget(self.model_results_table)
+        layout.addWidget(model_results_group, 1)
+
         # Action buttons
         button_layout = QtWidgets.QHBoxLayout()
 
@@ -1310,11 +1322,16 @@ class SpectrumAnalysisManager:
             model = signal.create_model()
             model.fit_background()
             self.spectrum_metadata.setdefault(name or "spectrum", {})["last_model"] = model
+            self._refresh_model_results_table()
             if self.model_status_label is not None:
                 self.model_status_label.setText(f"Background fit complete for {name}.")
         except Exception as exc:
             if self.model_status_label is not None:
                 self.model_status_label.setText(f"Background fit failed: {type(exc).__name__}: {exc}")
+
+    def run_model_fit_background(self) -> None:
+        """Public entrypoint for background fit action."""
+        self._on_model_fit_background_clicked()
 
     def _on_model_fit_clicked(self) -> None:
         """Run HyperSpy EDS model fit and store line intensity summary."""
@@ -1330,11 +1347,74 @@ class SpectrumAnalysisManager:
             model.fit()
             result = model.get_lines_intensity()
             self.spectrum_metadata.setdefault(name or "spectrum", {})["last_fit_result"] = result
+            self._refresh_model_results_table()
             if self.model_status_label is not None:
                 self.model_status_label.setText(f"Model fit complete for {name}.")
         except Exception as exc:
             if self.model_status_label is not None:
                 self.model_status_label.setText(f"Model fit failed: {type(exc).__name__}: {exc}")
+
+    def run_model_fit_full(self) -> None:
+        """Public entrypoint for full fit action."""
+        self._on_model_fit_clicked()
+
+    def _serialize_model_fit_result(self) -> List[Dict[str, Any]]:
+        """Serialize latest model-fit line intensity records for export."""
+        rows: List[Dict[str, Any]] = []
+        for spectrum_name, meta in sorted(self.spectrum_metadata.items()):
+            if not isinstance(meta, dict):
+                continue
+            result = meta.get("last_fit_result")
+            if result is None:
+                continue
+
+            if isinstance(result, list):
+                iterable = result
+            else:
+                iterable = [result]
+
+            for item in iterable:
+                title = "line"
+                try:
+                    meta_obj = getattr(item, "metadata", None)
+                    if meta_obj is not None and hasattr(meta_obj, "General"):
+                        t = getattr(meta_obj.General, "title", None)
+                        if t:
+                            title = str(t)
+                    elif isinstance(meta_obj, dict):
+                        t = meta_obj.get("General", {}).get("title")
+                        if t:
+                            title = str(t)
+                except Exception:
+                    title = "line"
+
+                data_arr = np.asarray(getattr(item, "data", np.asarray([])), dtype=float)
+                intensity = float(np.nansum(data_arr)) if data_arr.size else 0.0
+                rows.append(
+                    {
+                        "spectrum": spectrum_name,
+                        "line": title,
+                        "intensity": intensity,
+                    }
+                )
+        return rows
+
+    def _write_model_fit_rows_csv(self, path: Path, rows: Sequence[Dict[str, Any]]) -> bool:
+        """Write model-fit intensity rows to CSV."""
+        try:
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["spectrum", "line", "intensity"])
+                for row in rows:
+                    writer.writerow([
+                        str(row.get("spectrum", "")),
+                        str(row.get("line", "")),
+                        f"{float(row.get('intensity', 0.0)):.12g}",
+                    ])
+            return True
+        except Exception as exc:
+            self.logger.warning("Failed to write model-fit CSV %s: %s", path, exc)
+            return False
 
     def _on_element_checkbox_changed(self, element: str, state: int) -> None:
         """Handle elemental map visibility toggle.
@@ -2068,6 +2148,30 @@ class SpectrumAnalysisManager:
                 self.results_table.setItem(row_index, 4, at_item)
                 self.results_table.setItem(row_index, 5, method_item)
             self._notify_capability_state_changed()
+        self._refresh_model_results_table()
+
+    def _refresh_model_results_table(self) -> None:
+        """Populate model-fit line-intensity rows in the integration tab."""
+        if self.model_results_table is None:
+            return
+        self.model_results_table.setRowCount(0)
+        rows = self._serialize_model_fit_result()
+        for row in rows:
+            idx = self.model_results_table.rowCount()
+            self.model_results_table.insertRow(idx)
+            self.model_results_table.setItem(
+                idx, 0, QtWidgets.QTableWidgetItem(str(row.get("spectrum", "")))
+            )
+            self.model_results_table.setItem(
+                idx, 1, QtWidgets.QTableWidgetItem(str(row.get("line", "")))
+            )
+            self.model_results_table.setItem(
+                idx,
+                2,
+                QtWidgets.QTableWidgetItem(
+                    f"{float(row.get('intensity', 0.0)):.6g}"
+                ),
+            )
 
     def _register_output_artifact(
         self,
@@ -2180,6 +2284,7 @@ class SpectrumAnalysisManager:
                         else ""
                     ),
                     "available_spectra": sorted(list(self.spectra.keys())),
+                    "line_intensities": self._serialize_model_fit_result(),
                 },
                 "regions": regions,
             }
@@ -2231,10 +2336,13 @@ class SpectrumAnalysisManager:
 
         json_path = csv_path.with_suffix(".json")
         png_path = csv_path.with_suffix(".png")
+        model_csv_path = csv_path.with_name(csv_path.stem + "_model_fit.csv")
 
         ok_csv = self._write_quant_rows_csv(csv_path, rows)
         ok_json = self._write_region_metadata_json(json_path, scope="region", region_id=region_id)
         ok_png = self._save_snapshot_png(png_path)
+        model_rows = self._serialize_model_fit_result()
+        ok_model_csv = bool(model_rows) and self._write_model_fit_rows_csv(model_csv_path, model_rows)
 
         if ok_csv:
             self._register_output_artifact(
@@ -2253,6 +2361,12 @@ class SpectrumAnalysisManager:
                 kind="eds-region-snapshot",
                 path=png_path,
                 metadata={"region_id": region_id},
+            )
+        if ok_model_csv:
+            self._register_output_artifact(
+                kind="eds-model-fit-csv",
+                path=model_csv_path,
+                metadata={"region_id": region_id, "row_count": len(model_rows)},
             )
 
     def prompt_save_all_results(self) -> bool:
@@ -2281,9 +2395,12 @@ class SpectrumAnalysisManager:
         if csv_path.suffix.lower() != ".csv":
             csv_path = csv_path.with_suffix(".csv")
         json_path = csv_path.with_suffix(".json")
+        model_csv_path = csv_path.with_name(csv_path.stem + "_model_fit.csv")
 
         ok_csv = self._write_quant_rows_csv(csv_path, rows)
         ok_json = self._write_region_metadata_json(json_path, scope="all")
+        model_rows = self._serialize_model_fit_result()
+        ok_model_csv = bool(model_rows) and self._write_model_fit_rows_csv(model_csv_path, model_rows)
 
         if ok_csv:
             self._register_output_artifact(
@@ -2296,5 +2413,11 @@ class SpectrumAnalysisManager:
                 kind="eds-all-json",
                 path=json_path,
                 metadata={"row_count": len(rows)},
+            )
+        if ok_model_csv:
+            self._register_output_artifact(
+                kind="eds-model-fit-csv",
+                path=model_csv_path,
+                metadata={"row_count": len(model_rows)},
             )
         return ok_csv
