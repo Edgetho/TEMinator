@@ -514,6 +514,16 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             requires_edx_capabilities_all=("has_spectra",),
             menu_path="EDS",
         ),
+        MenuItemConfig(
+            title="Export Model Fit Results",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_model_fit_results",),
+            menu_path="EDS",
+        ),
         # Help menu
         MenuItemConfig(
             title="Keyboard Shortcuts",

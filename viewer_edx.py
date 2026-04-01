@@ -701,6 +701,7 @@ class SpectrumAnalysisManager:
             or self.spectrum_offset is not None
         )
         has_timing_metadata = self.live_time_s is not None or self.real_time_s is not None
+        has_model_fit_results = bool(self._serialize_model_fit_result())
         return EDSCapabilityState(
             has_edx_data=self._has_edx_data,
             has_elemental_maps=bool(self.elemental_maps),
@@ -709,6 +710,7 @@ class SpectrumAnalysisManager:
             has_energy_calibration=has_energy_calibration,
             has_timing_metadata=has_timing_metadata,
             has_xray_lines=bool(self.xray_lines),
+            has_model_fit_results=has_model_fit_results,
         )
 
     def add_integration_region(self, region_data: Dict[str, Any]) -> int:
@@ -1415,6 +1417,41 @@ class SpectrumAnalysisManager:
         except Exception as exc:
             self.logger.warning("Failed to write model-fit CSV %s: %s", path, exc)
             return False
+
+    def prompt_save_model_fit_results(self) -> bool:
+        """Prompt-save model-fit line intensities to CSV."""
+        rows = self._serialize_model_fit_result()
+        if not rows:
+            QtWidgets.QMessageBox.information(
+                self.edx_panel,
+                "Save Model Fit Results",
+                "No model-fit line intensities are available to save.",
+            )
+            return False
+
+        default_dir = self._default_output_dir()
+        default_name = f"{Path(self.viewer.file_path).stem}_eds_model_fit.csv"
+        selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.edx_panel,
+            "Save Model Fit Results",
+            str(default_dir / default_name),
+            "CSV (*.csv)",
+        )
+        if not selected_path:
+            return False
+
+        csv_path = Path(selected_path)
+        if csv_path.suffix.lower() != ".csv":
+            csv_path = csv_path.with_suffix(".csv")
+
+        ok = self._write_model_fit_rows_csv(csv_path, rows)
+        if ok:
+            self._register_output_artifact(
+                kind="eds-model-fit-csv",
+                path=csv_path,
+                metadata={"row_count": len(rows)},
+            )
+        return ok
 
     def _on_element_checkbox_changed(self, element: str, state: int) -> None:
         """Handle elemental map visibility toggle.

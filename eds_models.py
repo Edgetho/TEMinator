@@ -78,6 +78,7 @@ class EDSCapabilityState:
     has_energy_calibration: bool
     has_timing_metadata: bool
     has_xray_lines: bool
+    has_model_fit_results: bool = False
 
     def as_dict(self) -> Dict[str, bool]:
         """Return a dict representation for diagnostics/logging."""
@@ -89,4 +90,5 @@ class EDSCapabilityState:
             "has_energy_calibration": self.has_energy_calibration,
             "has_timing_metadata": self.has_timing_metadata,
             "has_xray_lines": self.has_xray_lines,
+            "has_model_fit_results": self.has_model_fit_results,
         }

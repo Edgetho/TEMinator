@@ -2166,6 +2166,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Toggle Absorption Correction": self._edx_toggle_absorption_correction,
             "Model Fit: Background": self._edx_model_fit_background,
             "Model Fit: Full": self._edx_model_fit_full,
+            "Export Model Fit Results": self._edx_export_model_fit_results,
             "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
             "About": self.help_actions.show_about,
             "README": self.help_actions.show_readme,
@@ -2479,6 +2480,12 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
         self.edx_manager.run_model_fit_full()
 
+    def _edx_export_model_fit_results(self) -> None:
+        """Export model-fit line intensities to CSV."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.prompt_save_model_fit_results()
+
     def refresh_edx_menu_state(self) -> None:
         """Refresh enablement of capability-gated EDS menu actions."""
         if not hasattr(self, "edx_manager") or not hasattr(self, "menu_builder"):
@@ -2497,6 +2504,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Toggle Absorption Correction": capabilities.get("has_timing_metadata", False),
             "Model Fit: Background": capabilities.get("has_spectra", False),
             "Model Fit: Full": capabilities.get("has_spectra", False),
+            "Export Model Fit Results": capabilities.get("has_model_fit_results", False),
         }
         for title, enabled in title_to_state.items():
             self.menu_builder.set_action_enabled("EDS", title, bool(enabled))
