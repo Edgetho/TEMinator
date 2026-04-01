@@ -2164,6 +2164,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Quant Method: Zeta": self._edx_set_quant_method_zeta,
             "Quant Method: Cross-Section": self._edx_set_quant_method_cross_section,
             "Toggle Absorption Correction": self._edx_toggle_absorption_correction,
+            "Model Fit: Background": self._edx_model_fit_background,
+            "Model Fit: Full": self._edx_model_fit_full,
             "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
             "About": self.help_actions.show_about,
             "README": self.help_actions.show_readme,
@@ -2465,6 +2467,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
         self.edx_manager.toggle_absorption_correction()
 
+    def _edx_model_fit_background(self) -> None:
+        """Run EDS model background fit on active spectrum."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.run_model_fit_background()
+
+    def _edx_model_fit_full(self) -> None:
+        """Run full EDS model fit on active spectrum."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.run_model_fit_full()
+
     def refresh_edx_menu_state(self) -> None:
         """Refresh enablement of capability-gated EDS menu actions."""
         if not hasattr(self, "edx_manager") or not hasattr(self, "menu_builder"):
@@ -2481,6 +2495,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Quant Method: Zeta": capabilities.get("has_integration_regions", False),
             "Quant Method: Cross-Section": capabilities.get("has_integration_regions", False),
             "Toggle Absorption Correction": capabilities.get("has_timing_metadata", False),
+            "Model Fit: Background": capabilities.get("has_spectra", False),
+            "Model Fit: Full": capabilities.get("has_spectra", False),
         }
         for title, enabled in title_to_state.items():
             self.menu_builder.set_action_enabled("EDS", title, bool(enabled))

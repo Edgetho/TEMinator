@@ -494,6 +494,26 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             requires_edx_capabilities_all=("has_timing_metadata",),
             menu_path="EDS",
         ),
+        MenuItemConfig(
+            title="Model Fit: Background",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_spectra",),
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Model Fit: Full",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_spectra",),
+            menu_path="EDS",
+        ),
         # Help menu
         MenuItemConfig(
             title="Keyboard Shortcuts",
