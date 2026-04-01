@@ -16,6 +16,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from eds_models import EDSCapabilityState, EDSMetadataContext, EDSROIRegion
+from eds_quantification import EDSQuantificationService, QuantificationRequest
 from types_common import LoggerLike
 
 
@@ -120,10 +121,15 @@ class SpectrumAnalysisManager:
         self.maps_list: Optional[QtWidgets.QListWidget] = None
         self.results_table: Optional[QtWidgets.QTableWidget] = None
         self.hover_status_label: Optional[QtWidgets.QLabel] = None
+        self.quant_method_combo: Optional[QtWidgets.QComboBox] = None
+        self.quant_units_combo: Optional[QtWidgets.QComboBox] = None
+        self.quant_factors_edit: Optional[QtWidgets.QLineEdit] = None
+        self.quant_absorption_checkbox: Optional[QtWidgets.QCheckBox] = None
         self.element_checkboxes: Dict[str, QtWidgets.QCheckBox] = {}
         self.element_name_labels: Dict[str, QtWidgets.QLabel] = {}
         self.element_color_buttons: Dict[str, QtWidgets.QPushButton] = {}
         
+        self.quantification_service = EDSQuantificationService()
         self._has_edx_data = False
 
     def _trace_event(self, event: str, **fields: Any) -> None:
@@ -927,11 +933,44 @@ class SpectrumAnalysisManager:
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
 
+        quant_group = QtWidgets.QGroupBox("Quantification Options")
+        quant_layout = QtWidgets.QFormLayout(quant_group)
+
+        self.quant_method_combo = QtWidgets.QComboBox()
+        self.quant_method_combo.addItems(["CL", "Custom"])
+        self.quant_method_combo.currentTextChanged.connect(
+            lambda _text: self._refresh_results_table()
+        )
+        quant_layout.addRow("Method:", self.quant_method_combo)
+
+        self.quant_units_combo = QtWidgets.QComboBox()
+        self.quant_units_combo.addItems(["atomic", "weight"])
+        self.quant_units_combo.setToolTip(
+            "Primary display preference for downstream exports; table always shows both wt% and at%."
+        )
+        quant_layout.addRow("Primary Units:", self.quant_units_combo)
+
+        self.quant_factors_edit = QtWidgets.QLineEdit()
+        self.quant_factors_edit.setPlaceholderText("Fe=1.45, Pt=5.08")
+        self.quant_factors_edit.textChanged.connect(lambda _text: self._refresh_results_table())
+        quant_layout.addRow("Factors:", self.quant_factors_edit)
+
+        self.quant_absorption_checkbox = QtWidgets.QCheckBox("Absorption correction")
+        capability = self.get_capability_state()
+        self.quant_absorption_checkbox.setEnabled(capability.has_timing_metadata)
+        if not capability.has_timing_metadata:
+            self.quant_absorption_checkbox.setToolTip(
+                "Disabled until required timing metadata is available."
+            )
+        quant_layout.addRow("Advanced:", self.quant_absorption_checkbox)
+
+        layout.addWidget(quant_group)
+
         # Results table
         self.results_table = QtWidgets.QTableWidget()
-        self.results_table.setColumnCount(5)
+        self.results_table.setColumnCount(6)
         self.results_table.setHorizontalHeaderLabels(
-            ["Region ID", "Element", "Counts", "wt%", "at%"]
+            ["Region ID", "Element", "Counts", "wt%", "at%", "Method"]
         )
         self.results_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.results_table, 1)
@@ -1468,13 +1507,38 @@ class SpectrumAnalysisManager:
             rows.append((element, counts))
         return rows
 
+    def _current_quant_method(self) -> str:
+        """Return active quantification method from UI."""
+        if self.quant_method_combo is None:
+            return "CL"
+        return str(self.quant_method_combo.currentText() or "CL")
+
+    def _current_quant_factor_text(self) -> str:
+        """Return quantification factors from UI input."""
+        if self.quant_factors_edit is None:
+            return ""
+        return str(self.quant_factors_edit.text() or "")
+
+    def _quant_rows_for_region(self, region: EDSROIRegion):
+        """Compute quantification rows for one region."""
+        count_pairs = self._compute_region_element_counts(region)
+        if not count_pairs:
+            return []
+        request = QuantificationRequest(
+            region_id=region.region_id,
+            element_counts={k: v for k, v in count_pairs},
+            method=self._current_quant_method(),
+            factor_text=self._current_quant_factor_text(),
+        )
+        return self.quantification_service.quantify(request)
+
     def _refresh_results_table(self) -> None:
         """Rebuild integration table rows from current region contracts."""
         if self.results_table is None:
             return
         self.results_table.setRowCount(0)
         for region in self.integration_regions:
-            rows = self._compute_region_element_counts(region)
+            rows = list(self._quant_rows_for_region(region))
             if not rows:
                 row_index = self.results_table.rowCount()
                 self.results_table.insertRow(row_index)
@@ -1483,12 +1547,29 @@ class SpectrumAnalysisManager:
                 self.results_table.setItem(row_index, 2, QtWidgets.QTableWidgetItem("0"))
                 self.results_table.setItem(row_index, 3, QtWidgets.QTableWidgetItem("-"))
                 self.results_table.setItem(row_index, 4, QtWidgets.QTableWidgetItem("-"))
+                self.results_table.setItem(row_index, 5, QtWidgets.QTableWidgetItem(self._current_quant_method()))
                 continue
-            for element, counts in rows:
+            for qrow in rows:
                 row_index = self.results_table.rowCount()
                 self.results_table.insertRow(row_index)
-                self.results_table.setItem(row_index, 0, QtWidgets.QTableWidgetItem(str(region.region_id)))
-                self.results_table.setItem(row_index, 1, QtWidgets.QTableWidgetItem(element))
-                self.results_table.setItem(row_index, 2, QtWidgets.QTableWidgetItem(f"{counts:.6g}"))
-                self.results_table.setItem(row_index, 3, QtWidgets.QTableWidgetItem("-"))
-                self.results_table.setItem(row_index, 4, QtWidgets.QTableWidgetItem("-"))
+                id_item = QtWidgets.QTableWidgetItem(str(qrow.region_id))
+                element_item = QtWidgets.QTableWidgetItem(qrow.element)
+                counts_item = QtWidgets.QTableWidgetItem(f"{qrow.counts:.6g}")
+                wt_text = "-" if qrow.weight_percent is None else f"{qrow.weight_percent:.3f}"
+                at_text = "-" if qrow.atomic_percent is None else f"{qrow.atomic_percent:.3f}"
+                wt_item = QtWidgets.QTableWidgetItem(wt_text)
+                at_item = QtWidgets.QTableWidgetItem(at_text)
+                method_item = QtWidgets.QTableWidgetItem(qrow.method)
+
+                warnings = list(qrow.warnings)
+                if warnings:
+                    tooltip = "\n".join(warnings)
+                    element_item.setToolTip(tooltip)
+                    method_item.setToolTip(tooltip)
+
+                self.results_table.setItem(row_index, 0, id_item)
+                self.results_table.setItem(row_index, 1, element_item)
+                self.results_table.setItem(row_index, 2, counts_item)
+                self.results_table.setItem(row_index, 3, wt_item)
+                self.results_table.setItem(row_index, 4, at_item)
+                self.results_table.setItem(row_index, 5, method_item)
