@@ -49,6 +49,12 @@ class QuantificationRequest:
     element_counts: Dict[str, float]
     method: str
     factor_text: str = ""
+    absorption_correction: bool = False
+    thickness_nm: Optional[float] = None
+    beam_current_na: Optional[float] = None
+    real_time_s: Optional[float] = None
+    probe_area_nm2: Optional[float] = None
+    detector_count: Optional[int] = None
 
 
 class EDSQuantificationService:
@@ -139,6 +145,45 @@ class EDSQuantificationService:
                 out[element] = weighted_terms[element] / denom
         return out, warnings
 
+    @staticmethod
+    def _normalize_method(method: str) -> str:
+        token = (method or "CL").strip().lower()
+        if token in {"custom"}:
+            return "CUSTOM"
+        if token in {"zeta", "z"}:
+            return "ZETA"
+        if token in {"cross_section", "cross-section", "crosssection", "cs"}:
+            return "CROSS_SECTION"
+        return "CL"
+
+    @staticmethod
+    def _validate_method_requirements(
+        request: QuantificationRequest,
+        method: str,
+    ) -> List[str]:
+        warnings: List[str] = []
+
+        if method == "ZETA":
+            if request.beam_current_na is None:
+                warnings.append("zeta method missing beam_current; using relative scaling")
+            if request.real_time_s is None:
+                warnings.append("zeta method missing real_time; using relative scaling")
+        elif method == "CROSS_SECTION":
+            if request.beam_current_na is None:
+                warnings.append("cross_section method missing beam_current; using relative scaling")
+            if request.real_time_s is None:
+                warnings.append("cross_section method missing real_time; using relative scaling")
+            if request.probe_area_nm2 is None:
+                warnings.append("cross_section method missing probe_area; using relative scaling")
+
+        if request.absorption_correction:
+            if method == "CL" and request.thickness_nm is None:
+                warnings.append("CL absorption correction requires thickness (nm); skipped")
+            if request.detector_count is not None and request.detector_count > 1:
+                warnings.append("absorption correction validated for single-detector spectra; check detector inputs")
+
+        return warnings
+
     def quantify(self, request: QuantificationRequest) -> Sequence[EDSQuantResultRow]:
         """Quantify one region using CL or custom factors."""
         warnings: List[str] = []
@@ -151,9 +196,10 @@ class EDSQuantificationService:
         if not counts:
             return []
 
-        method = (request.method or "CL").strip().upper()
+        method = self._normalize_method(request.method)
         factors = self._parse_factor_text(request.factor_text)
         corrected: Dict[str, float] = {}
+        warnings.extend(self._validate_method_requirements(request, method))
 
         if method == "CUSTOM":
             for element, count in counts.items():
@@ -161,6 +207,24 @@ class EDSQuantificationService:
                 corrected[element] = max(0.0, count * factor)
                 if element not in factors:
                     warnings.append(f"Custom factor missing for {element}; defaulted to 1.0")
+        elif method == "ZETA":
+            for element, count in counts.items():
+                factor = factors.get(element, 1.0)
+                if abs(factor) < 1e-12:
+                    factor = 1.0
+                    warnings.append(f"zeta factor for {element} was 0; defaulted to 1.0")
+                if element not in factors:
+                    warnings.append(f"zeta factor missing for {element}; defaulted to 1.0")
+                corrected[element] = max(0.0, count / factor)
+        elif method == "CROSS_SECTION":
+            for element, count in counts.items():
+                factor = factors.get(element, 1.0)
+                if abs(factor) < 1e-12:
+                    factor = 1.0
+                    warnings.append(f"cross-section factor for {element} was 0; defaulted to 1.0")
+                if element not in factors:
+                    warnings.append(f"cross-section factor missing for {element}; defaulted to 1.0")
+                corrected[element] = max(0.0, count / factor)
         else:
             method = "CL"
             for element, count in counts.items():

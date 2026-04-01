@@ -93,6 +93,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         fft_name: Optional[str] = None,
         parent_image_window: Optional["ImageViewerWindow"] = None,
         elemental_map_signals: Optional[List[Tuple[str, Any]]] = None,
+        eds_spectrum_signals: Optional[List[Tuple[str, Any]]] = None,
     ):
         """Initialize an image viewer window for displaying TEM images and measurements.
 
@@ -106,6 +107,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             fft_name: Optional name/label for FFT windows.
             parent_image_window: Reference to parent viewer for FFT/inverse FFT relationships.
             elemental_map_signals: Optional list of (element_name, signal) tuples for EDX elemental maps.
+            eds_spectrum_signals: Optional list of (spectrum_name, signal) tuples for EDX spectra.
         """
         super().__init__()
         self.setAcceptDrops(True)
@@ -166,6 +168,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self.fft_name = fft_name
         self.parent_image_window = parent_image_window
         self.elemental_map_signals: Optional[List[Tuple[str, Any]]] = elemental_map_signals
+        self.eds_spectrum_signals: Optional[List[Tuple[str, Any]]] = eds_spectrum_signals
         self._magnitude_spectrum = None
         self._fft_complex = None
         self._inverse_fft_cache = None
@@ -336,7 +339,10 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._set_base_window_title(title)
 
         # Load EDX data BEFORE setup_ui so menu items can be properly configured
-        self.edx_manager.detect_and_load_edx_data(elemental_map_signals=self.elemental_map_signals)
+        self.edx_manager.detect_and_load_edx_data(
+            elemental_map_signals=self.elemental_map_signals,
+            spectrum_signals=self.eds_spectrum_signals,
+        )
         self.setup_ui()
         self.resize(*DEFAULT_IMAGE_WINDOW_SIZE)
 
@@ -2155,6 +2161,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Clear Integration Regions": self._edx_clear_regions,
             "Quant Method: CL": self._edx_set_quant_method_cl,
             "Quant Method: Custom": self._edx_set_quant_method_custom,
+            "Quant Method: Zeta": self._edx_set_quant_method_zeta,
+            "Quant Method: Cross-Section": self._edx_set_quant_method_cross_section,
             "Toggle Absorption Correction": self._edx_toggle_absorption_correction,
             "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
             "About": self.help_actions.show_about,
@@ -2439,6 +2447,18 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
         self.edx_manager.set_quant_method("Custom")
 
+    def _edx_set_quant_method_zeta(self) -> None:
+        """Switch quantification method to Zeta."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.set_quant_method("Zeta")
+
+    def _edx_set_quant_method_cross_section(self) -> None:
+        """Switch quantification method to Cross-Section."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.set_quant_method("Cross-Section")
+
     def _edx_toggle_absorption_correction(self) -> None:
         """Toggle absorption correction option in the integration panel."""
         if not hasattr(self, "edx_manager"):
@@ -2458,6 +2478,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Clear Integration Regions": capabilities.get("has_integration_regions", False),
             "Quant Method: CL": capabilities.get("has_integration_regions", False),
             "Quant Method: Custom": capabilities.get("has_integration_regions", False),
+            "Quant Method: Zeta": capabilities.get("has_integration_regions", False),
+            "Quant Method: Cross-Section": capabilities.get("has_integration_regions", False),
             "Toggle Absorption Correction": capabilities.get("has_timing_metadata", False),
         }
         for title, enabled in title_to_state.items():

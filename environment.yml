@@ -8,4 +8,5 @@ dependencies:
     - pyqtgraph
     - pyqt=5.15.*
     - hyperspy
+    - exspy
     - sparse #enable loading of spectrum images

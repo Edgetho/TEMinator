@@ -209,6 +209,32 @@ def _is_edx_elemental_map(signal: Any) -> bool:
         return False
 
 
+def _is_edx_spectrum_signal(signal: Any) -> bool:
+    """Check if a signal likely carries EDS spectrum data.
+
+    Args:
+        signal: HyperSpy signal to check.
+
+    Returns:
+        True for 1D signal-space datasets (single spectra or spectrum images).
+    """
+    try:
+        return (
+            hasattr(signal, "axes_manager")
+            and signal.axes_manager.signal_dimension == 1
+        )
+    except Exception:
+        return False
+
+
+def _extract_spectrum_name(signal: Any, index: int) -> str:
+    """Generate stable display names for EDS spectrum sources."""
+    title = _extract_signal_title(signal)
+    if title:
+        return title
+    return f"Spectrum_{index}"
+
+
 def _detect_edx_dataset(
     signals: List[Any],
 ) -> Tuple[Optional[Any], List[Tuple[str, Any]]]:
@@ -316,6 +342,7 @@ def open_image_file(file_path: str) -> None:
         
         if is_emd_file:
             two_d_signals: List[Any] = []
+            spectrum_signals: List[Tuple[str, Any]] = []
             for sig in signals:
                 try:
                     if (
@@ -324,6 +351,10 @@ def open_image_file(file_path: str) -> None:
                         and sig.axes_manager.navigation_dimension == 0
                     ):
                         two_d_signals.append(sig)
+                    elif _is_edx_spectrum_signal(sig):
+                        spectrum_signals.append(
+                            (_extract_spectrum_name(sig, len(spectrum_signals)), sig)
+                        )
                 except Exception as e:
                     logger.debug(f"Error processing 2D signal for EDX: {e}")
 
@@ -389,9 +420,15 @@ def open_image_file(file_path: str) -> None:
                 )
             else:
                 primary_signal, elemental_maps = None, []
+                spectrum_signals = []
         else:
             # For non-.emd files, use original detection logic
             primary_signal, elemental_maps = _detect_edx_dataset(signals)
+            spectrum_signals = [
+                (_extract_spectrum_name(sig, idx), sig)
+                for idx, sig in enumerate(signals)
+                if _is_edx_spectrum_signal(sig)
+            ]
 
         if primary_signal is not None:
             # EDX dataset: open single window with elemental maps
@@ -401,6 +438,7 @@ def open_image_file(file_path: str) -> None:
                     file_path,
                     signal=primary_signal,
                     elemental_map_signals=elemental_maps,
+                    eds_spectrum_signals=spectrum_signals,
                 )
                 window.show()
                 logger.debug("Opened EDX viewer window")

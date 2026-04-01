@@ -56,6 +56,53 @@ class QuantificationServiceTests(unittest.TestCase):
         self.assertEqual(record["method"], "CL")
         self.assertIn("example warning", record["warnings"])
 
+    def test_zeta_method_warns_for_missing_required_metadata(self):
+        service = EDSQuantificationService()
+        req = QuantificationRequest(
+            region_id=9,
+            element_counts={"Fe": 10.0, "Pt": 20.0},
+            method="zeta",
+            factor_text="Fe=1.0, Pt=1.0",
+            beam_current_na=None,
+            real_time_s=None,
+        )
+        rows = list(service.quantify(req))
+        self.assertEqual(len(rows), 2)
+        warnings = "\n".join(rows[0].warnings)
+        self.assertIn("zeta method missing beam_current", warnings)
+        self.assertIn("zeta method missing real_time", warnings)
+
+    def test_cross_section_method_warns_for_probe_area(self):
+        service = EDSQuantificationService()
+        req = QuantificationRequest(
+            region_id=11,
+            element_counts={"Ni": 5.0, "Te": 5.0},
+            method="cross_section",
+            factor_text="Ni=1.0, Te=1.0",
+            beam_current_na=0.5,
+            real_time_s=1.0,
+            probe_area_nm2=None,
+        )
+        rows = list(service.quantify(req))
+        self.assertEqual(len(rows), 2)
+        warnings = "\n".join(rows[0].warnings)
+        self.assertIn("cross_section method missing probe_area", warnings)
+
+    def test_cl_absorption_requires_thickness(self):
+        service = EDSQuantificationService()
+        req = QuantificationRequest(
+            region_id=3,
+            element_counts={"Ta": 100.0},
+            method="CL",
+            factor_text="Ta=1.0",
+            absorption_correction=True,
+            thickness_nm=None,
+            detector_count=1,
+        )
+        rows = list(service.quantify(req))
+        self.assertEqual(len(rows), 1)
+        self.assertIn("CL absorption correction requires thickness", "\n".join(rows[0].warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,7 +19,12 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from eds_metadata import build_eds_metadata_context, coerce_float, first_present_number
-from eds_models import EDSCapabilityState, EDSMetadataContext, EDSROIRegion
+from eds_models import (
+    EDSCapabilityState,
+    EDSIntegrationSettings,
+    EDSMetadataContext,
+    EDSROIRegion,
+)
 from eds_quantification import (
     EDS_CSV_HEADER,
     EDSQuantificationService,
@@ -91,6 +96,7 @@ class SpectrumAnalysisManager:
 
         # Spectrum data state
         self.spectra: Dict[str, np.ndarray] = {}  # spectrum_name -> 1D array
+        self.spectrum_energy_axes: Dict[str, np.ndarray] = {}
         self.spectrum_metadata: Dict[str, Dict[str, Any]] = {}  # spectrum_name -> metadata dict
         self.active_spectra: set[str] = set()  # which spectra are currently displayed
 
@@ -139,9 +145,20 @@ class SpectrumAnalysisManager:
         self.quant_units_combo: Optional[QtWidgets.QComboBox] = None
         self.quant_factors_edit: Optional[QtWidgets.QLineEdit] = None
         self.quant_absorption_checkbox: Optional[QtWidgets.QCheckBox] = None
+        self.background_mode_combo: Optional[QtWidgets.QComboBox] = None
+        self.integration_width_edit: Optional[QtWidgets.QLineEdit] = None
         self.element_checkboxes: Dict[str, QtWidgets.QCheckBox] = {}
         self.element_name_labels: Dict[str, QtWidgets.QLabel] = {}
         self.element_color_buttons: Dict[str, QtWidgets.QPushButton] = {}
+        self._line_family_checkboxes: Dict[str, QtWidgets.QCheckBox] = {}
+        self._enabled_line_families: set[str] = {"Ka", "Kb", "La", "Lb", "Ma"}
+        self._line_overlay_items: List[Any] = []
+        self._window_overlay_items: List[Any] = []
+        self.integration_settings = EDSIntegrationSettings(
+            integration_windows_ev=tuple(),
+            background_mode="none",
+            included_lines=tuple(),
+        )
         
         self.quantification_service = EDSQuantificationService()
         self._has_edx_data = False
@@ -196,6 +213,7 @@ class SpectrumAnalysisManager:
     def detect_and_load_edx_data(
         self,
         elemental_map_signals: Optional[List[Tuple[str, Any]]] = None,
+        spectrum_signals: Optional[List[Tuple[str, Any]]] = None,
     ) -> bool:
         """Detect and auto-load EDX data from signal metadata or provided map signals.
 
@@ -209,19 +227,22 @@ class SpectrumAnalysisManager:
             return False
 
         try:
-            # If elemental map signals were provided, load them directly
-            if elemental_map_signals:
+            # If EDX signals were provided, load them directly.
+            if elemental_map_signals or spectrum_signals:
                 self._load_elemental_maps_from_signals(elemental_map_signals)
+                self._load_spectra_from_signals(spectrum_signals)
                 self._load_energy_calibration_from_metadata(
                     self.viewer._get_original_metadata_dict_from_signal(self.viewer.signal) or {}
                 )
                 self._load_element_colors_from_metadata(
                     self.viewer._get_original_metadata_dict_from_signal(self.viewer.signal) or {}
                 )
-                self._has_edx_data = len(self.elemental_maps) > 0
+                self._has_edx_data = len(self.elemental_maps) > 0 or len(self.spectra) > 0
                 if self._has_edx_data:
                     self.logger.info(
-                        f"EDX data loaded from signals: {len(self.elemental_maps)} elemental map(s)"
+                        "EDX data loaded from signals: %d spectra, %d elemental map(s)",
+                        len(self.spectra),
+                        len(self.elemental_maps),
                     )
                 return self._has_edx_data
 
@@ -278,6 +299,56 @@ class SpectrumAnalysisManager:
         except (KeyError, IndexError, TypeError) as e:
             self.logger.debug(f"Could not parse spectra from metadata: {e}")
 
+    def _energy_axis_from_signal(self, signal: Any, channels: int) -> np.ndarray:
+        """Build calibrated energy axis for a spectrum signal when possible."""
+        try:
+            axis = signal.axes_manager.signal_axes[0]
+            scale = float(getattr(axis, "scale", self.spectrum_dispersion))
+            offset = float(getattr(axis, "offset", self.spectrum_offset))
+            units = str(getattr(axis, "units", "") or "").strip().lower()
+            if units == "kev":
+                scale *= 1000.0
+                offset *= 1000.0
+            return offset + np.arange(channels, dtype=float) * scale
+        except Exception:
+            return self.spectrum_offset + np.arange(channels, dtype=float) * self.spectrum_dispersion
+
+    def _load_spectra_from_signals(
+        self,
+        spectrum_signals: Optional[List[Tuple[str, Any]]],
+    ) -> None:
+        """Load EDS spectra directly from provided HyperSpy signal objects."""
+        if not spectrum_signals:
+            return
+
+        for spectrum_name, signal in spectrum_signals:
+            try:
+                data = np.asarray(signal.data, dtype=float)
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to access spectrum data for %s: %s",
+                    spectrum_name,
+                    exc,
+                )
+                continue
+
+            if data.ndim < 1:
+                continue
+
+            channels = int(data.shape[-1])
+            self.spectra[spectrum_name] = data
+            self.spectrum_energy_axes[spectrum_name] = self._energy_axis_from_signal(
+                signal, channels
+            )
+            self.spectrum_metadata[spectrum_name] = {
+                "signal": signal,
+                "shape": tuple(int(v) for v in data.shape),
+                "source": "hyperspy-signal",
+            }
+
+        if self.spectra and not self.active_spectra:
+            self.active_spectra = set(self.spectra.keys())
+
     def _load_elemental_maps_from_metadata(self, meta: Dict[str, Any]) -> None:
         """Load elemental map references from metadata.
 
@@ -309,13 +380,16 @@ class SpectrumAnalysisManager:
             self.logger.debug(f"Could not parse elemental maps from metadata: {e}")
 
     def _load_elemental_maps_from_signals(
-        self, elemental_map_signals: List[Tuple[str, Any]]
+        self, elemental_map_signals: Optional[List[Tuple[str, Any]]]
     ) -> None:
         """Load elemental maps directly from provided signals.
 
         Args:
             elemental_map_signals: List of (element_name, signal) tuples.
         """
+        if not elemental_map_signals:
+            return
+
         try:
             for element_name, signal in elemental_map_signals:
                 # Store the signal data directly
@@ -460,11 +534,17 @@ class SpectrumAnalysisManager:
         Returns:
             1D array of energy values in eV.
         """
-        # Assuming spectrum has fixed number of channels
-        # This should be determined from actual spectrum shape
-        num_channels = 1024  # placeholder
-        energy = self.spectrum_offset + np.arange(num_channels) * self.spectrum_dispersion
-        return energy
+        if self.active_spectra:
+            candidate = next(iter(self.active_spectra))
+            axis = self.spectrum_energy_axes.get(candidate)
+            if axis is not None:
+                return axis
+
+        for axis in self.spectrum_energy_axes.values():
+            return axis
+
+        num_channels = 1024
+        return self.spectrum_offset + np.arange(num_channels) * self.spectrum_dispersion
 
     def render_composite_map(
         self,
@@ -774,6 +854,7 @@ class SpectrumAnalysisManager:
 
         for spectrum_name in self.spectra.keys():
             checkbox = QtWidgets.QCheckBox(spectrum_name)
+            checkbox.setChecked(True)
             checkbox.setToolTip(f"Toggle {spectrum_name} spectrum display")
             checkbox.stateChanged.connect(
                 lambda state, name=spectrum_name: self._on_spectrum_checkbox_changed(
@@ -786,6 +867,39 @@ class SpectrumAnalysisManager:
         spectrum_list_group.setLayout(spectrum_list_layout)
         layout.addWidget(spectrum_list_group, 0)
 
+        line_group = QtWidgets.QGroupBox("X-ray Line Markers")
+        line_layout = QtWidgets.QHBoxLayout(line_group)
+        self._line_family_checkboxes.clear()
+        for family in ("Ka", "Kb", "La", "Lb", "Ma"):
+            checkbox = QtWidgets.QCheckBox(family)
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(
+                lambda state, fam=family: self._on_line_family_checkbox_changed(
+                    fam, state
+                )
+            )
+            self._line_family_checkboxes[family] = checkbox
+            line_layout.addWidget(checkbox)
+        line_layout.addStretch()
+        layout.addWidget(line_group)
+
+        windows_group = QtWidgets.QGroupBox("Integration/Background Windows")
+        windows_layout = QtWidgets.QFormLayout(windows_group)
+        self.background_mode_combo = QtWidgets.QComboBox()
+        self.background_mode_combo.addItems(["none", "auto"])
+        self.background_mode_combo.currentTextChanged.connect(
+            lambda _text: self._refresh_integration_windows_from_controls()
+        )
+        windows_layout.addRow("Background:", self.background_mode_combo)
+
+        self.integration_width_edit = QtWidgets.QLineEdit("120")
+        self.integration_width_edit.setToolTip("Half-width around each selected line (eV)")
+        self.integration_width_edit.textChanged.connect(
+            lambda _text: self._refresh_integration_windows_from_controls()
+        )
+        windows_layout.addRow("Half-width (eV):", self.integration_width_edit)
+        layout.addWidget(windows_group)
+
         # Energy calibration info
         calib_info = QtWidgets.QLabel(
             f"Calibration: {self._calibration_source}\n"
@@ -796,6 +910,8 @@ class SpectrumAnalysisManager:
         )
         calib_info.setWordWrap(True)
         layout.addWidget(calib_info)
+
+        self._refresh_integration_windows_from_controls()
 
         return widget
 
@@ -873,7 +989,7 @@ class SpectrumAnalysisManager:
         quant_layout = QtWidgets.QFormLayout(quant_group)
 
         self.quant_method_combo = QtWidgets.QComboBox()
-        self.quant_method_combo.addItems(["CL", "Custom"])
+        self.quant_method_combo.addItems(["CL", "Custom", "Zeta", "Cross-Section"])
         self.quant_method_combo.currentTextChanged.connect(
             lambda _text: self._refresh_results_table()
         )
@@ -968,6 +1084,143 @@ class SpectrumAnalysisManager:
         else:
             self.active_spectra.discard(spectrum_name)
         self.logger.debug(f"Active spectra: {self.active_spectra}")
+
+    def _on_line_family_checkbox_changed(self, family: str, state: int) -> None:
+        """Handle X-ray line-family marker visibility toggles."""
+        if state == QtCore.Qt.Checked:
+            self._enabled_line_families.add(family)
+        else:
+            self._enabled_line_families.discard(family)
+        self._draw_line_markers()
+        self._refresh_integration_windows_from_controls()
+
+    @staticmethod
+    def _safe_get_line_energy_ev(element: str, family: str) -> Optional[float]:
+        """Resolve a line energy from HyperSpy's elemental database in eV."""
+        try:
+            import hyperspy.api as hs
+
+            node = getattr(hs.material.elements, element)
+            xray = getattr(node.Atomic_properties.Xray_lines, family)
+            energy_kev = float(getattr(xray, "energy_keV", getattr(xray, "energy")))
+            return energy_kev * 1000.0
+        except Exception:
+            return None
+
+    def _line_marker_candidates(self) -> List[Tuple[float, str]]:
+        """Build marker candidates from selected elements and line families."""
+        elements: set[str] = set()
+        for line in self.xray_lines:
+            if "_" in line:
+                elements.add(line.split("_", 1)[0])
+        for element in self.elemental_maps.keys():
+            token = str(element).split()[0].strip()
+            if token and token[0].isalpha():
+                elements.add(token)
+
+        markers: List[Tuple[float, str]] = []
+        for element in sorted(elements):
+            for family in sorted(self._enabled_line_families):
+                energy_ev = self._safe_get_line_energy_ev(element, family)
+                if energy_ev is None:
+                    continue
+                if self.beam_energy_ev and energy_ev > self.beam_energy_ev:
+                    continue
+                markers.append((energy_ev, f"{element}_{family}"))
+        return markers
+
+    def _draw_line_markers(self) -> None:
+        """Draw X-ray line overlays on the active spectrum plot."""
+        if self.spectrum_plot is None:
+            return
+        for item in self._line_overlay_items:
+            try:
+                self.spectrum_plot.removeItem(item)
+            except Exception:
+                pass
+        self._line_overlay_items = []
+
+        for energy_ev, label in self._line_marker_candidates():
+            marker = pg.InfiniteLine(
+                pos=float(energy_ev),
+                angle=90,
+                movable=False,
+                pen=pg.mkPen(255, 215, 0, width=1),
+                label=label,
+                labelOpts={"position": 0.95, "color": (255, 215, 0)},
+            )
+            self.spectrum_plot.addItem(marker)
+            self._line_overlay_items.append(marker)
+
+    def _refresh_integration_windows_from_controls(self) -> None:
+        """Recompute integration windows from UI controls and redraw overlays."""
+        half_width_ev = 120.0
+        if self.integration_width_edit is not None:
+            try:
+                parsed = float(self.integration_width_edit.text().strip())
+                if parsed > 0:
+                    half_width_ev = parsed
+            except Exception:
+                pass
+
+        background_mode = "none"
+        if self.background_mode_combo is not None:
+            background_mode = str(self.background_mode_combo.currentText() or "none").strip().lower()
+
+        markers = self._line_marker_candidates()
+        line_windows: List[Tuple[float, float]] = []
+        included_lines: List[str] = []
+        for energy_ev, label in markers:
+            line_windows.append((energy_ev - half_width_ev, energy_ev + half_width_ev))
+            included_lines.append(label)
+
+        self.integration_settings = EDSIntegrationSettings(
+            integration_windows_ev=tuple(line_windows),
+            background_mode=background_mode,
+            included_lines=tuple(included_lines),
+        )
+        self._draw_integration_windows()
+
+    def _draw_integration_windows(self) -> None:
+        """Draw integration/background window overlays on the spectrum plot."""
+        if self.spectrum_plot is None:
+            return
+
+        for item in self._window_overlay_items:
+            try:
+                self.spectrum_plot.removeItem(item)
+            except Exception:
+                pass
+        self._window_overlay_items = []
+
+        for low_ev, high_ev in self.integration_settings.integration_windows_ev:
+            region = pg.LinearRegionItem(
+                values=(float(low_ev), float(high_ev)),
+                movable=False,
+                brush=pg.mkBrush(0, 255, 255, 25),
+                pen=pg.mkPen(0, 255, 255, 80),
+            )
+            self.spectrum_plot.addItem(region)
+            self._window_overlay_items.append(region)
+
+            if self.integration_settings.background_mode == "auto":
+                width = max((high_ev - low_ev), 1.0)
+                pad = 0.25 * width
+                left = pg.LinearRegionItem(
+                    values=(float(low_ev - width - pad), float(low_ev - pad)),
+                    movable=False,
+                    brush=pg.mkBrush(255, 180, 0, 20),
+                    pen=pg.mkPen(255, 180, 0, 60),
+                )
+                right = pg.LinearRegionItem(
+                    values=(float(high_ev + pad), float(high_ev + width + pad)),
+                    movable=False,
+                    brush=pg.mkBrush(255, 180, 0, 20),
+                    pen=pg.mkPen(255, 180, 0, 60),
+                )
+                self.spectrum_plot.addItem(left)
+                self.spectrum_plot.addItem(right)
+                self._window_overlay_items.extend([left, right])
 
     def _on_element_checkbox_changed(self, element: str, state: int) -> None:
         """Handle elemental map visibility toggle.
@@ -1401,6 +1654,8 @@ class SpectrumAnalysisManager:
         view_box = self.spectrum_plot.getViewBox()
         if view_box is not None:
             view_box.autoRange()
+        self._draw_line_markers()
+        self._draw_integration_windows()
         if self.hover_status_label is not None:
             source_text = source_label
             if source_label == "elemental maps":
@@ -1420,15 +1675,21 @@ class SpectrumAnalysisManager:
                 continue
             arr = np.asarray(data)
             if arr.ndim == 1:
-                energy = self.spectrum_offset + np.arange(arr.size) * self.spectrum_dispersion
+                energy = self.spectrum_energy_axes.get(name)
+                if energy is None or energy.shape[0] != arr.size:
+                    energy = self.spectrum_offset + np.arange(arr.size) * self.spectrum_dispersion
                 return energy.astype(float), arr.astype(float), name
             if arr.ndim == 3 and row < arr.shape[0] and col < arr.shape[1]:
                 counts = arr[row, col, :]
-                energy = self.spectrum_offset + np.arange(counts.size) * self.spectrum_dispersion
+                energy = self.spectrum_energy_axes.get(name)
+                if energy is None or energy.shape[0] != counts.size:
+                    energy = self.spectrum_offset + np.arange(counts.size) * self.spectrum_dispersion
                 return energy.astype(float), counts.astype(float), name
             if arr.ndim == 2 and row < arr.shape[0]:
                 counts = arr[row, :]
-                energy = self.spectrum_offset + np.arange(counts.size) * self.spectrum_dispersion
+                energy = self.spectrum_energy_axes.get(name)
+                if energy is None or energy.shape[0] != counts.size:
+                    energy = self.spectrum_offset + np.arange(counts.size) * self.spectrum_dispersion
                 return energy.astype(float), counts.astype(float), name
 
         # Fallback: pseudo spectrum from elemental map intensities at this pixel.
@@ -1500,16 +1761,62 @@ class SpectrumAnalysisManager:
             return ""
         return str(self.quant_factors_edit.text() or "")
 
+    def _extract_beam_current_na(self) -> Optional[float]:
+        """Resolve beam current (nA) from mapped or original metadata when available."""
+        try:
+            mapped = getattr(self.viewer.signal, "metadata", None)
+            if mapped is not None and hasattr(mapped, "as_dictionary"):
+                mapped_dict = mapped.as_dictionary()
+                if isinstance(mapped_dict, dict):
+                    tem = mapped_dict.get("Acquisition_instrument", {}).get("TEM", {})
+                    if isinstance(tem, dict):
+                        beam_current = self._coerce_float(tem.get("beam_current"))
+                        if beam_current is not None:
+                            return beam_current
+        except Exception:
+            pass
+
+        meta = self.viewer._get_original_metadata_dict_from_signal(self.viewer.signal) or {}
+        acquisition = meta.get("Acquisition", {}) if isinstance(meta, dict) else {}
+        if isinstance(acquisition, dict):
+            return self._coerce_float(acquisition.get("BeamCurrent"))
+        return None
+
     def _quant_rows_for_region(self, region: EDSROIRegion):
         """Compute quantification rows for one region."""
         count_pairs = self._compute_region_element_counts(region)
         if not count_pairs:
             return []
+        method_ui = self._current_quant_method().strip().lower()
+        method_map = {
+            "cl": "CL",
+            "custom": "CUSTOM",
+            "zeta": "ZETA",
+            "cross-section": "CROSS_SECTION",
+            "cross_section": "CROSS_SECTION",
+        }
+        method = method_map.get(method_ui, "CL")
         request = QuantificationRequest(
             region_id=region.region_id,
             element_counts={k: v for k, v in count_pairs},
-            method=self._current_quant_method(),
+            method=method,
             factor_text=self._current_quant_factor_text(),
+            absorption_correction=bool(
+                self.quant_absorption_checkbox is not None
+                and self.quant_absorption_checkbox.isChecked()
+            ),
+            thickness_nm=self._coerce_float(region.metadata.get("thickness_nm")),
+            beam_current_na=self._extract_beam_current_na(),
+            real_time_s=self.real_time_s,
+            detector_count=len(
+                [
+                    v
+                    for v in (
+                        self.viewer._get_original_metadata_dict_from_signal(self.viewer.signal) or {}
+                    ).get("Detectors", {}).values()
+                    if isinstance(v, dict) and v.get("DetectorType") == "AnalyticalDetector"
+                ]
+            ) or None,
         )
         return self.quantification_service.quantify(request)
 
