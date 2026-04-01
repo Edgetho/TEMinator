@@ -46,6 +46,10 @@ class _SpectrumAnalysisManagerOwner(Protocol):
         """Enter EDX integration region selection mode."""
         ...
 
+    def refresh_edx_menu_state(self) -> None:
+        """Refresh dynamic EDS menu enablement from capability state."""
+        ...
+
     def _get_original_metadata_dict_from_signal(self, signal: Any) -> Dict[str, Any]:
         """Get original metadata from signal."""
         ...
@@ -117,6 +121,7 @@ class SpectrumAnalysisManager:
         
         # UI References (set by image viewer)
         self.edx_panel: Optional[QtWidgets.QWidget] = None
+        self.edx_tabs: Optional[QtWidgets.QTabWidget] = None
         self.spectrum_plot: Optional[pg.PlotItem] = None
         self.maps_list: Optional[QtWidgets.QListWidget] = None
         self.results_table: Optional[QtWidgets.QTableWidget] = None
@@ -131,6 +136,16 @@ class SpectrumAnalysisManager:
         
         self.quantification_service = EDSQuantificationService()
         self._has_edx_data = False
+        self.hover_updates_enabled: bool = True
+
+    def _notify_capability_state_changed(self) -> None:
+        """Notify owner that EDS capabilities may have changed."""
+        refresh_hook = getattr(self.viewer, "refresh_edx_menu_state", None)
+        if callable(refresh_hook):
+            try:
+                refresh_hook()
+            except Exception:
+                pass
 
     def _trace_event(self, event: str, **fields: Any) -> None:
         """Forward structured export trace logs to the owning viewer when enabled."""
@@ -736,6 +751,7 @@ class SpectrumAnalysisManager:
         )
         self.integration_regions.append(region)
         self.region_count += 1
+        self._notify_capability_state_changed()
         self.logger.debug(f"Added integration region {region_id}")
         return region_id
 
@@ -757,6 +773,7 @@ class SpectrumAnalysisManager:
                         self.viewer.p1.removeItem(roi_item)
                     except Exception:
                         pass
+                self._notify_capability_state_changed()
                 self.logger.debug(f"Removed integration region {region_id}")
                 return True
         return False
@@ -807,6 +824,7 @@ class SpectrumAnalysisManager:
             tabs.addTab(integration_tab, "Integration")
 
         layout.addWidget(tabs)
+        self.edx_tabs = tabs
         self.edx_panel = panel
         return panel
 
@@ -1106,6 +1124,7 @@ class SpectrumAnalysisManager:
         """Handle region selection button click."""
         self.active_region_selector = True
         self.logger.debug("Region selector activated")
+        self.show_tab("Integration")
         # Tell parent viewer to enter region selection mode
         if hasattr(self.viewer, "edx_manager_start_region_selection"):
             self.viewer.edx_manager_start_region_selection()
@@ -1127,7 +1146,45 @@ class SpectrumAnalysisManager:
         self.clear_integration_regions()
         if self.results_table:
             self.results_table.setRowCount(0)
+        self._notify_capability_state_changed()
         self.logger.debug("Integration results cleared")
+
+    def show_tab(self, tab_name: str) -> None:
+        """Switch EDS tabs by visible tab title."""
+        if self.edx_tabs is None:
+            return
+        for idx in range(self.edx_tabs.count()):
+            if self.edx_tabs.tabText(idx).strip().lower() == tab_name.strip().lower():
+                self.edx_tabs.setCurrentIndex(idx)
+                return
+
+    def set_quant_method(self, method: str) -> None:
+        """Set quantification method and refresh rows."""
+        if self.quant_method_combo is None:
+            return
+        target = method.strip().lower()
+        for idx in range(self.quant_method_combo.count()):
+            if self.quant_method_combo.itemText(idx).strip().lower() == target:
+                self.quant_method_combo.setCurrentIndex(idx)
+                self._refresh_results_table()
+                return
+
+    def toggle_absorption_correction(self) -> None:
+        """Toggle absorption correction option when available."""
+        if self.quant_absorption_checkbox is None:
+            return
+        if not self.quant_absorption_checkbox.isEnabled():
+            return
+        self.quant_absorption_checkbox.setChecked(
+            not self.quant_absorption_checkbox.isChecked()
+        )
+
+    def toggle_hover_updates(self) -> None:
+        """Toggle hover spectra updates on/off."""
+        self.hover_updates_enabled = not self.hover_updates_enabled
+        if self.hover_status_label is not None:
+            status = "enabled" if self.hover_updates_enabled else "disabled"
+            self.hover_status_label.setText(f"Hover spectra updates {status}.")
 
     def _on_remove_selected_region_clicked(self) -> None:
         """Remove the region tied to the selected results-table row."""
@@ -1168,6 +1225,7 @@ class SpectrumAnalysisManager:
             vb.mouseDragEvent = self._on_region_mouse_drag
 
         self.active_region_selector = True
+        self._notify_capability_state_changed()
         if not self._region_hover_hint_shown:
             self._region_hover_hint_shown = True
             QtWidgets.QMessageBox.information(
@@ -1298,6 +1356,7 @@ class SpectrumAnalysisManager:
         self._refresh_results_table()
         self._restore_region_draw_handlers()
         self.active_region_selector = False
+        self._notify_capability_state_changed()
 
     def _on_region_mouse_release(self, event: Any) -> None:
         """Handle region-draw mouse release completion."""
@@ -1389,6 +1448,8 @@ class SpectrumAnalysisManager:
 
     def update_hover_spectrum(self, x: float, y: float) -> None:
         """Update spectrum plot from current cursor location."""
+        if not self.hover_updates_enabled:
+            return
         if self.spectrum_plot is None:
             return
         now = monotonic()
@@ -1573,3 +1634,4 @@ class SpectrumAnalysisManager:
                 self.results_table.setItem(row_index, 3, wt_item)
                 self.results_table.setItem(row_index, 4, at_item)
                 self.results_table.setItem(row_index, 5, method_item)
+            self._notify_capability_state_changed()

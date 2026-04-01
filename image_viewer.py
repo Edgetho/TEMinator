@@ -2148,6 +2148,14 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Toggle Spectra Panel": self._edx_toggle_panel,
             "Select Integration Region": self._edx_start_region_selection,
             "Export EDS Results": self._edx_export_results,
+            "Show Spectra Tab": self._edx_show_spectra_tab,
+            "Show Maps Tab": self._edx_show_maps_tab,
+            "Show Integration Tab": self._edx_show_integration_tab,
+            "Toggle Hover Spectra": self._edx_toggle_hover_spectra,
+            "Clear Integration Regions": self._edx_clear_regions,
+            "Quant Method: CL": self._edx_set_quant_method_cl,
+            "Quant Method: Custom": self._edx_set_quant_method_custom,
+            "Toggle Absorption Correction": self._edx_toggle_absorption_correction,
             "Keyboard Shortcuts": self.help_actions.show_keyboard_shortcuts,
             "About": self.help_actions.show_about,
             "README": self.help_actions.show_readme,
@@ -2173,6 +2181,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             hasattr(self, "edx_manager") 
             and self.edx_manager.get_capability_state().has_edx_data
         )
+        edx_capabilities = (
+            self.edx_manager.get_capability_state().as_dict()
+            if hasattr(self, "edx_manager")
+            else {}
+        )
 
         # Build menus using the builder
         self.menu_builder = MenuBuilder(self, logger)
@@ -2180,6 +2193,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             config, 
             image_available=image_available,
             edx_available=edx_available,
+            edx_capabilities=edx_capabilities,
         )
 
         # Add Colormap submenu with individual colormap options to the Display menu
@@ -2382,6 +2396,72 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
         logger.debug("EDX menu action: export results")
         self.edx_manager._on_export_results_clicked()
+
+    def _edx_show_spectra_tab(self) -> None:
+        """Switch EDS panel to the Spectra tab."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.show_tab("Spectra")
+
+    def _edx_show_maps_tab(self) -> None:
+        """Switch EDS panel to the Maps tab."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.show_tab("Maps")
+
+    def _edx_show_integration_tab(self) -> None:
+        """Switch EDS panel to the Integration tab."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.show_tab("Integration")
+
+    def _edx_toggle_hover_spectra(self) -> None:
+        """Enable or disable hover-driven spectra updates."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.toggle_hover_updates()
+
+    def _edx_clear_regions(self) -> None:
+        """Clear all EDS integration regions."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager._on_clear_results_clicked()
+
+    def _edx_set_quant_method_cl(self) -> None:
+        """Switch quantification method to CL."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.set_quant_method("CL")
+
+    def _edx_set_quant_method_custom(self) -> None:
+        """Switch quantification method to Custom."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.set_quant_method("Custom")
+
+    def _edx_toggle_absorption_correction(self) -> None:
+        """Toggle absorption correction option in the integration panel."""
+        if not hasattr(self, "edx_manager"):
+            return
+        self.edx_manager.toggle_absorption_correction()
+
+    def refresh_edx_menu_state(self) -> None:
+        """Refresh enablement of capability-gated EDS menu actions."""
+        if not hasattr(self, "edx_manager") or not hasattr(self, "menu_builder"):
+            return
+        capabilities = self.edx_manager.get_capability_state().as_dict()
+        title_to_state = {
+            "Show Spectra Tab": capabilities.get("has_edx_data", False),
+            "Show Maps Tab": capabilities.get("has_elemental_maps", False),
+            "Show Integration Tab": capabilities.get("has_edx_data", False),
+            "Toggle Hover Spectra": capabilities.get("has_edx_data", False),
+            "Clear Integration Regions": capabilities.get("has_integration_regions", False),
+            "Quant Method: CL": capabilities.get("has_integration_regions", False),
+            "Quant Method: Custom": capabilities.get("has_integration_regions", False),
+            "Toggle Absorption Correction": capabilities.get("has_timing_metadata", False),
+        }
+        for title, enabled in title_to_state.items():
+            self.menu_builder.set_action_enabled("EDS", title, bool(enabled))
 
     def _menu_start_peak_selection(self) -> None:
         """Handle menu action that starts peak selection mode."""

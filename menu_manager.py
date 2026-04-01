@@ -38,6 +38,7 @@ class MenuItemConfig:
     is_implemented: bool = True
     requires_image: bool = False
     requires_edx: bool = False
+    requires_edx_capabilities_all: tuple[str, ...] = ()
     menu_path: str = ""
 
 
@@ -105,6 +106,7 @@ class MenuBuilder:
         config: List[MenuItemConfig],
         image_available: bool = False,
         edx_available: bool = False,
+        edx_capabilities: Optional[Mapping[str, bool]] = None,
     ) -> Dict[str, QtWidgets.QAction]:
         """Build menus from a list of MenuItemConfigs.
 
@@ -120,6 +122,7 @@ class MenuBuilder:
             config: List of MenuItemConfig items
             image_available: Whether an active image is available
             edx_available: Whether EDX data is available
+            edx_capabilities: Capability flags used by EDX-specific menu items
 
         Returns:
             Dictionary of all created actions, keyed by menu path and title
@@ -141,10 +144,18 @@ class MenuBuilder:
             self.menus[menu_name] = menu
 
             for item in items:
+                missing_capabilities = [
+                    cap
+                    for cap in item.requires_edx_capabilities_all
+                    if not bool((edx_capabilities or {}).get(cap, False))
+                ]
+                capabilities_ok = not missing_capabilities
+
                 # Determine if item should be enabled
                 is_enabled = item.is_implemented and (
                     (not item.requires_image or image_available) and
-                    (not item.requires_edx or edx_available)
+                    (not item.requires_edx or edx_available) and
+                    capabilities_ok
                 )
 
                 action = self.add_menu_item(
@@ -162,6 +173,8 @@ class MenuBuilder:
                         reason = "not implemented"
                     elif item.requires_edx and not edx_available:
                         reason = "requires EDX data"
+                    elif missing_capabilities:
+                        reason = "missing capability: " + ", ".join(missing_capabilities)
                     else:
                         reason = "requires active image"
                     self.logger.debug(f"Disabled menu item '{item.title}' ({reason})")
@@ -382,6 +395,83 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             is_implemented=True,
             requires_image=True,
             requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Show Spectra Tab",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Show Maps Tab",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_elemental_maps",),
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Show Integration Tab",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Toggle Hover Spectra",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Clear Integration Regions",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_integration_regions",),
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Quant Method: CL",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_integration_regions",),
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Quant Method: Custom",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_integration_regions",),
+            menu_path="EDS",
+        ),
+        MenuItemConfig(
+            title="Toggle Absorption Correction",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            requires_edx=True,
+            requires_edx_capabilities_all=("has_timing_metadata",),
             menu_path="EDS",
         ),
         # Help menu
