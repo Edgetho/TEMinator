@@ -1323,7 +1323,9 @@ class SpectrumAnalysisManager:
             signal = self._build_hyperspy_eds_signal(counts, energy_ev)
             model = signal.create_model()
             model.fit_background()
-            self.spectrum_metadata.setdefault(name or "spectrum", {})["last_model"] = model
+            meta = self.spectrum_metadata.setdefault(name or "spectrum", {})
+            meta["last_model"] = model
+            meta["last_background_fit_timestamp"] = datetime.now(timezone.utc).isoformat()
             self._refresh_model_results_table()
             if self.model_status_label is not None:
                 self.model_status_label.setText(f"Background fit complete for {name}.")
@@ -1348,7 +1350,9 @@ class SpectrumAnalysisManager:
             model.fit_background()
             model.fit()
             result = model.get_lines_intensity()
-            self.spectrum_metadata.setdefault(name or "spectrum", {})["last_fit_result"] = result
+            meta = self.spectrum_metadata.setdefault(name or "spectrum", {})
+            meta["last_fit_result"] = result
+            meta["last_fit_timestamp"] = datetime.now(timezone.utc).isoformat()
             self._refresh_model_results_table()
             if self.model_status_label is not None:
                 self.model_status_label.setText(f"Model fit complete for {name}.")
@@ -1417,6 +1421,30 @@ class SpectrumAnalysisManager:
         except Exception as exc:
             self.logger.warning("Failed to write model-fit CSV %s: %s", path, exc)
             return False
+
+    def _model_fit_summary_by_spectrum(self) -> List[Dict[str, Any]]:
+        """Build compact per-spectrum model-fit summaries for export sidecars."""
+        rows = self._serialize_model_fit_result()
+        aggregate: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            spectrum = str(row.get("spectrum", ""))
+            if not spectrum:
+                continue
+            entry = aggregate.setdefault(
+                spectrum,
+                {"spectrum": spectrum, "line_count": 0, "total_intensity": 0.0},
+            )
+            entry["line_count"] = int(entry["line_count"]) + 1
+            entry["total_intensity"] = float(entry["total_intensity"]) + float(
+                row.get("intensity", 0.0)
+            )
+
+        for spectrum, entry in aggregate.items():
+            meta = self.spectrum_metadata.get(spectrum, {}) if isinstance(self.spectrum_metadata, dict) else {}
+            if isinstance(meta, dict) and meta.get("last_fit_timestamp"):
+                entry["last_fit_timestamp"] = str(meta["last_fit_timestamp"])
+
+        return [aggregate[key] for key in sorted(aggregate.keys())]
 
     def prompt_save_model_fit_results(self) -> bool:
         """Prompt-save model-fit line intensities to CSV."""
@@ -2322,6 +2350,7 @@ class SpectrumAnalysisManager:
                     ),
                     "available_spectra": sorted(list(self.spectra.keys())),
                     "line_intensities": self._serialize_model_fit_result(),
+                    "spectrum_summary": self._model_fit_summary_by_spectrum(),
                 },
                 "regions": regions,
             }
