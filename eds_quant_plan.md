@@ -114,3 +114,40 @@ This plan delivers a production-oriented EDS feature expansion centered on inter
 2. Quantification tables are reproducible and exportable with validated schema.
 3. Menu actions reflect runtime capability accurately.
 4. All newly created derived outputs trigger save prompts and persist correctly.
+
+## Patch Notes
+
+### 2026-04-01
+
+Implemented work completed through Phase 4.
+
+1. Phase 0 completed:
+1.1 Added canonical EDS contracts for spectrum samples, ROI regions, integration settings, quant rows, metadata context, and capability state.
+1.2 Added metadata fallback parsing for beam energy, dispersion, offset, timing fields, and X-ray lines.
+1.3 Introduced capability-state API for dynamic menu/feature gating.
+
+2. Phase 1 completed:
+2.1 Added hover spectra updates from image-view mouse position.
+2.2 Added rectangle ROI integration workflow with interactive creation, edit, remove, and clear behavior.
+2.3 Added live Integration table refresh from region-derived element counts.
+2.4 Added source labeling for pseudo-spectrum fallback mode when full spectra are unavailable.
+
+3. Phase 2 completed:
+3.1 Added quantification service module with CL and custom methods.
+3.2 Added factors parsing and warning propagation.
+3.3 Added Integration tab quant controls (method, units preference, factor input, absorption toggle).
+3.4 Added method/warning-aware quantified rows in results table.
+
+4. Phase 3 completed:
+4.1 Added capability-aware EDS menu gating beyond simple EDX-present checks.
+4.2 Added dynamic EDS menu actions for tab navigation, hover toggle, region clear, method switching, and absorption toggle.
+4.3 Added runtime menu refresh hooks tied to capability changes.
+
+5. Phase 4 completed:
+5.1 Added output artifact registry for EDS-derived files.
+5.2 Added prompt-save flow when new region-derived outputs are created.
+5.3 Implemented EDS export persistence to CSV and JSON sidecar files, plus optional snapshot PNG for region saves.
+5.4 Hooked Save View flow to optionally persist EDS quantification artifacts.
+
+6. Current known limitation:
+6.1 Full high-resolution detector-spectrum hover depends on loading true spectral cube data; elemental-map fallback remains lower-resolution by design.

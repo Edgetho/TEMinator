@@ -2939,6 +2939,24 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         else:
             message_lines.append("No profile windows were open; no profile views were saved.")
 
+        # Optionally persist EDS result artifacts when available.
+        if (
+            hasattr(self, "edx_manager")
+            and self.edx_manager.get_capability_state().has_integration_regions
+        ):
+            save_eds_reply = QtWidgets.QMessageBox.question(
+                self,
+                "Save EDS Results",
+                "Save EDS quantification data artifacts as well?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if save_eds_reply == QtWidgets.QMessageBox.Yes:
+                if self.edx_manager.prompt_save_all_results():
+                    message_lines.append("Saved EDS quantification data artifacts.")
+                else:
+                    message_lines.append("EDS quantification artifacts were not saved.")
+
         QtWidgets.QMessageBox.information(
             self,
             "Save Images",

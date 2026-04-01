@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
+import csv
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from time import monotonic
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
@@ -137,6 +140,7 @@ class SpectrumAnalysisManager:
         self.quantification_service = EDSQuantificationService()
         self._has_edx_data = False
         self.hover_updates_enabled: bool = True
+        self.output_artifacts: List[Dict[str, Any]] = []
 
     def _notify_capability_state_changed(self) -> None:
         """Notify owner that EDS capabilities may have changed."""
@@ -1137,6 +1141,7 @@ class SpectrumAnalysisManager:
             )
             return
         self.logger.debug(f"Exporting {len(self.integration_regions)} regions")
+        self.prompt_save_all_results()
 
     def _on_clear_results_clicked(self) -> None:
         """Handle clear results button click."""
@@ -1354,6 +1359,7 @@ class SpectrumAnalysisManager:
             self.region_rois[region_id] = roi_item
 
         self._refresh_results_table()
+        self.prompt_save_region_artifacts(region_id)
         self._restore_region_draw_handlers()
         self.active_region_selector = False
         self._notify_capability_state_changed()
@@ -1635,3 +1641,237 @@ class SpectrumAnalysisManager:
                 self.results_table.setItem(row_index, 4, at_item)
                 self.results_table.setItem(row_index, 5, method_item)
             self._notify_capability_state_changed()
+
+    def _register_output_artifact(
+        self,
+        *,
+        kind: str,
+        path: Path,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record generated output artifact for phase-4 persistence tracking."""
+        self.output_artifacts.append(
+            {
+                "kind": kind,
+                "path": str(path),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "metadata": metadata or {},
+            }
+        )
+
+    def _default_output_dir(self) -> Path:
+        """Resolve preferred output directory near the source file."""
+        try:
+            return Path(self.viewer.file_path).parent
+        except Exception:
+            return Path.cwd()
+
+    def _quant_rows_all_regions(self) -> List[Any]:
+        """Return flattened quantification rows for all regions."""
+        rows: List[Any] = []
+        for region in self.integration_regions:
+            rows.extend(self._quant_rows_for_region(region))
+        return rows
+
+    def _quant_rows_for_region_id(self, region_id: int) -> List[Any]:
+        """Return quantification rows for one region id."""
+        for region in self.integration_regions:
+            if region.region_id == region_id:
+                return list(self._quant_rows_for_region(region))
+        return []
+
+    def _write_quant_rows_csv(self, path: Path, rows: Sequence[Any]) -> bool:
+        """Write quantification rows to CSV."""
+        try:
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(
+                    [
+                        "region_id",
+                        "element",
+                        "counts",
+                        "weight_percent",
+                        "atomic_percent",
+                        "method",
+                        "warnings",
+                    ]
+                )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            row.region_id,
+                            row.element,
+                            f"{row.counts:.12g}",
+                            "" if row.weight_percent is None else f"{row.weight_percent:.12g}",
+                            "" if row.atomic_percent is None else f"{row.atomic_percent:.12g}",
+                            row.method,
+                            " | ".join(row.warnings),
+                        ]
+                    )
+            return True
+        except Exception as exc:
+            self.logger.warning("Failed to write EDS CSV %s: %s", path, exc)
+            return False
+
+    def _write_region_metadata_json(
+        self,
+        path: Path,
+        *,
+        scope: str,
+        region_id: Optional[int] = None,
+    ) -> bool:
+        """Write sidecar JSON with region/calibration metadata."""
+        try:
+            if region_id is None:
+                regions = [
+                    {
+                        "region_id": r.region_id,
+                        "geometry_type": r.geometry_type,
+                        "coordinates": list(r.coordinates),
+                        "calibration_units": r.calibration_units,
+                        "timestamp_iso": r.timestamp_iso,
+                        "metadata": dict(r.metadata),
+                    }
+                    for r in self.integration_regions
+                ]
+            else:
+                regions = [
+                    {
+                        "region_id": r.region_id,
+                        "geometry_type": r.geometry_type,
+                        "coordinates": list(r.coordinates),
+                        "calibration_units": r.calibration_units,
+                        "timestamp_iso": r.timestamp_iso,
+                        "metadata": dict(r.metadata),
+                    }
+                    for r in self.integration_regions
+                    if r.region_id == region_id
+                ]
+
+            payload = {
+                "scope": scope,
+                "calibration_source": self._calibration_source,
+                "beam_energy_ev": self.beam_energy_ev,
+                "dispersion_ev_per_channel": self.spectrum_dispersion,
+                "offset_ev": self.spectrum_offset,
+                "live_time_s": self.live_time_s,
+                "real_time_s": self.real_time_s,
+                "quant_method": self._current_quant_method(),
+                "quant_factors": self._current_quant_factor_text(),
+                "regions": regions,
+            }
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            return True
+        except Exception as exc:
+            self.logger.warning("Failed to write EDS JSON %s: %s", path, exc)
+            return False
+
+    def _save_snapshot_png(self, path: Path) -> bool:
+        """Save a snapshot image of the current EDS view."""
+        try:
+            glw = getattr(self.viewer, "glw", None)
+            if glw is None:
+                return False
+            pixmap = glw.grab()
+            return bool(pixmap.save(str(path), "PNG"))
+        except Exception:
+            return False
+
+    def prompt_save_region_artifacts(self, region_id: int) -> None:
+        """Prompt-save outputs for a newly created region-derived result."""
+        rows = self._quant_rows_for_region_id(region_id)
+        if not rows:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self.edx_panel,
+            "Save EDS Region Output",
+            f"Save derived outputs for EDS region {region_id}?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+
+        default_dir = self._default_output_dir()
+        default_name = f"{Path(self.viewer.file_path).stem}_eds_region{region_id}.csv"
+        selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.edx_panel,
+            "Save EDS Region Results",
+            str(default_dir / default_name),
+            "CSV (*.csv)",
+        )
+        if not selected_path:
+            return
+        csv_path = Path(selected_path)
+        if csv_path.suffix.lower() != ".csv":
+            csv_path = csv_path.with_suffix(".csv")
+
+        json_path = csv_path.with_suffix(".json")
+        png_path = csv_path.with_suffix(".png")
+
+        ok_csv = self._write_quant_rows_csv(csv_path, rows)
+        ok_json = self._write_region_metadata_json(json_path, scope="region", region_id=region_id)
+        ok_png = self._save_snapshot_png(png_path)
+
+        if ok_csv:
+            self._register_output_artifact(
+                kind="eds-region-csv",
+                path=csv_path,
+                metadata={"region_id": region_id},
+            )
+        if ok_json:
+            self._register_output_artifact(
+                kind="eds-region-json",
+                path=json_path,
+                metadata={"region_id": region_id},
+            )
+        if ok_png:
+            self._register_output_artifact(
+                kind="eds-region-snapshot",
+                path=png_path,
+                metadata={"region_id": region_id},
+            )
+
+    def prompt_save_all_results(self) -> bool:
+        """Prompt-save all integrated EDS results and return True when CSV saved."""
+        rows = self._quant_rows_all_regions()
+        if not rows:
+            QtWidgets.QMessageBox.information(
+                self.edx_panel,
+                "Save EDS Results",
+                "No quantified region rows are available to save.",
+            )
+            return False
+
+        default_dir = self._default_output_dir()
+        default_name = f"{Path(self.viewer.file_path).stem}_eds_results.csv"
+        selected_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.edx_panel,
+            "Save EDS Results",
+            str(default_dir / default_name),
+            "CSV (*.csv)",
+        )
+        if not selected_path:
+            return False
+
+        csv_path = Path(selected_path)
+        if csv_path.suffix.lower() != ".csv":
+            csv_path = csv_path.with_suffix(".csv")
+        json_path = csv_path.with_suffix(".json")
+
+        ok_csv = self._write_quant_rows_csv(csv_path, rows)
+        ok_json = self._write_region_metadata_json(json_path, scope="all")
+
+        if ok_csv:
+            self._register_output_artifact(
+                kind="eds-all-csv",
+                path=csv_path,
+                metadata={"row_count": len(rows)},
+            )
+        if ok_json:
+            self._register_output_artifact(
+                kind="eds-all-json",
+                path=json_path,
+                metadata={"row_count": len(rows)},
+            )
+        return ok_csv
