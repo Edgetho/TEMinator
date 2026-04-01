@@ -189,6 +189,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         self._export_trace_enabled: bool = str(
             os.environ.get("TEMINATOR_EXPORT_TRACE", "")
         ).strip().lower() in {"1", "true", "yes", "on"}
+        self._edx_hover_connected: bool = False
         self.measurements = MeasurementController(self, logger)
         self.fft_manager = FFTWindowManager(self, logger, FFT_COLORS)
         self.edx_manager = SpectrumAnalysisManager(self, logger)
@@ -1411,6 +1412,21 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             self._on_measurement_drawing_state_changed,
         )
 
+        # Route scene hover to EDS manager for mouse-over spectra updates.
+        if (
+            not self._edx_hover_connected
+            and self.view_mode == "image"
+            and hasattr(self, "edx_manager")
+            and self.edx_manager.get_has_edx_data()
+        ):
+            try:
+                scene = self.glw.scene() if self.glw is not None else None
+                if scene is not None and hasattr(scene, "sigMouseMoved"):
+                    scene.sigMouseMoved.connect(self._on_scene_mouse_moved_for_edx)
+                    self._edx_hover_connected = True
+            except Exception:
+                logger.debug("Could not connect EDS hover handler", exc_info=True)
+
         if hasattr(self.p1, "vb") and hasattr(self.p1.vb, "sigRangeChanged"):
             self.p1.vb.sigRangeChanged.connect(self._on_view_range_changed)
 
@@ -2317,6 +2333,48 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             return
         logger.debug("EDX menu action: start region selection")
         self.edx_manager._on_select_region_clicked()
+
+    def edx_manager_start_region_selection(self) -> None:
+        """Enter EDS rectangle region selection mode from the manager."""
+        if self.view_mode != "image" or self.p1 is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "EDS",
+                "Region selection is available only on image views.",
+            )
+            return
+
+        # Ensure measurement tools do not compete for mouse events.
+        try:
+            self.measurements.exit_measure_mode()
+        except Exception:
+            logger.debug("Could not exit measurement mode before EDS region draw", exc_info=True)
+
+        self._prepare_for_measurement_input()
+        if self.btn_measure is not None:
+            self.btn_measure.blockSignals(True)
+            self.btn_measure.setChecked(False)
+            self.btn_measure.blockSignals(False)
+            self.btn_measure.setStyleSheet("")
+
+        self.edx_manager.begin_rectangle_region_selection()
+
+    def _on_scene_mouse_moved_for_edx(self, scene_pos: object) -> None:
+        """Forward scene mouse movement to EDS hover-spectrum inspector."""
+        if self.view_mode != "image":
+            return
+        if not hasattr(self, "edx_manager") or not self.edx_manager.get_has_edx_data():
+            return
+        if self.p1 is None:
+            return
+        try:
+            if not self.p1.sceneBoundingRect().contains(scene_pos):
+                return
+            view_pos = self.p1.vb.mapSceneToView(scene_pos)
+            self.edx_manager.update_hover_spectrum(view_pos.x(), view_pos.y())
+        except Exception:
+            # Hover updates are best-effort and should never break interaction.
+            return
 
     def _edx_export_results(self) -> None:
         """Export EDX integration results."""

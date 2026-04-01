@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
@@ -91,6 +93,11 @@ class SpectrumAnalysisManager:
         self.integration_regions: List[EDSROIRegion] = []
         self.region_count: int = 0
         self.active_region_selector: bool = False
+        self.region_rois: Dict[int, pg.RectROI] = {}
+        self._region_draw_start: Optional[Tuple[float, float]] = None
+        self._region_draw_preview: Optional[pg.RectROI] = None
+        self._region_draw_prev_handlers: Optional[Tuple[Any, Any, Any, Any]] = None
+        self._region_hover_hint_shown: bool = False
         
         # Energy calibration state
         self.beam_energy_ev: float = 200.0  # default 200 eV
@@ -104,12 +111,15 @@ class SpectrumAnalysisManager:
         # Cached composite map for display
         self._cached_composite_map: Optional[np.ndarray] = None
         self._cached_composite_needs_update: bool = True
+        self._last_hover_update_s: float = 0.0
+        self._hover_interval_s: float = 0.05
         
         # UI References (set by image viewer)
         self.edx_panel: Optional[QtWidgets.QWidget] = None
         self.spectrum_plot: Optional[pg.PlotItem] = None
         self.maps_list: Optional[QtWidgets.QListWidget] = None
         self.results_table: Optional[QtWidgets.QTableWidget] = None
+        self.hover_status_label: Optional[QtWidgets.QLabel] = None
         self.element_checkboxes: Dict[str, QtWidgets.QCheckBox] = {}
         self.element_name_labels: Dict[str, QtWidgets.QLabel] = {}
         self.element_color_buttons: Dict[str, QtWidgets.QPushButton] = {}
@@ -357,6 +367,23 @@ class SpectrumAnalysisManager:
 
     def _build_metadata_context(self, meta: Dict[str, Any]) -> EDSMetadataContext:
         """Resolve EDS calibration/timing metadata using a fallback hierarchy."""
+        def _extract_custom_property_numeric(key_suffix: str) -> Optional[float]:
+            custom_props = meta.get("CustomProperties", {})
+            if not isinstance(custom_props, dict):
+                return None
+            for key, entry in custom_props.items():
+                if not isinstance(key, str):
+                    continue
+                if not key.endswith(key_suffix):
+                    continue
+                if isinstance(entry, dict) and "value" in entry:
+                    value = self._coerce_float(entry.get("value"))
+                else:
+                    value = self._coerce_float(entry)
+                if value is not None:
+                    return value
+            return None
+
         mapped_meta = getattr(self.viewer.signal, "metadata", None)
         mapped_sample: Dict[str, Any] = {}
         mapped_tem: Dict[str, Any] = {}
@@ -383,6 +410,7 @@ class SpectrumAnalysisManager:
 
         dispersion_ev_per_channel = None
         offset_ev = None
+        begin_energy_ev = None
         live_time_s = None
         real_time_s = None
         detectors = meta.get("Detectors", {})
@@ -396,10 +424,26 @@ class SpectrumAnalysisManager:
                     dispersion_ev_per_channel = self._coerce_float(det_info.get("Dispersion"))
                 if offset_ev is None:
                     offset_ev = self._coerce_float(det_info.get("OffsetEnergy"))
+                if begin_energy_ev is None:
+                    begin_energy_ev = self._coerce_float(det_info.get("BeginEnergy"))
                 if live_time_s is None:
                     live_time_s = self._coerce_float(det_info.get("LiveTime"))
                 if real_time_s is None:
                     real_time_s = self._coerce_float(det_info.get("RealTime"))
+
+        # Fallbacks from vendor custom properties when detector records are incomplete.
+        if dispersion_ev_per_channel is None:
+            dispersion_ev_per_channel = _extract_custom_property_numeric(".Dispersion")
+        if begin_energy_ev is None:
+            begin_energy_ev = _extract_custom_property_numeric(".SpectrumBeginEnergy")
+        if live_time_s is None:
+            live_time_s = _extract_custom_property_numeric(".LiveTime")
+        if real_time_s is None:
+            real_time_s = _extract_custom_property_numeric(".RealTime")
+
+        # Prefer explicit offset; otherwise use detector begin energy as channel-0 anchor.
+        if offset_ev is None and begin_energy_ev is not None:
+            offset_ev = begin_energy_ev
 
         xray_lines: List[str] = []
         lines_from_mapped = mapped_sample.get("xray_lines", [])
@@ -701,12 +745,25 @@ class SpectrumAnalysisManager:
         for i, region in enumerate(self.integration_regions):
             if region.region_id == region_id:
                 self.integration_regions.pop(i)
+                roi_item = self.region_rois.pop(region_id, None)
+                if roi_item is not None and hasattr(self.viewer, "p1") and self.viewer.p1 is not None:
+                    try:
+                        self.viewer.p1.removeItem(roi_item)
+                    except Exception:
+                        pass
                 self.logger.debug(f"Removed integration region {region_id}")
                 return True
         return False
 
     def clear_integration_regions(self) -> None:
         """Clear all integration regions."""
+        if hasattr(self.viewer, "p1") and self.viewer.p1 is not None:
+            for roi_item in self.region_rois.values():
+                try:
+                    self.viewer.p1.removeItem(roi_item)
+                except Exception:
+                    pass
+        self.region_rois.clear()
         self.integration_regions.clear()
         self.region_count = 0
         self.logger.debug("Cleared all integration regions")
@@ -749,7 +806,7 @@ class SpectrumAnalysisManager:
 
     def _build_spectrum_tab(self) -> Optional[QtWidgets.QWidget]:
         """Build the spectrum display and control tab."""
-        if not self.spectra:
+        if not self.spectra and not self.elemental_maps:
             return None
 
         widget = QtWidgets.QWidget()
@@ -762,6 +819,12 @@ class SpectrumAnalysisManager:
         plot_widget = pg.GraphicsLayoutWidget()
         plot_widget.addItem(self.spectrum_plot, row=0, col=0)
         layout.addWidget(plot_widget, 1)
+
+        self.hover_status_label = QtWidgets.QLabel(
+            "Hover over the image to inspect spectra."
+        )
+        self.hover_status_label.setWordWrap(True)
+        layout.addWidget(self.hover_status_label)
 
         # Spectrum selector with checkboxes
         spectrum_list_group = QtWidgets.QGroupBox("Spectrum Sources")
@@ -785,7 +848,9 @@ class SpectrumAnalysisManager:
         calib_info = QtWidgets.QLabel(
             f"Calibration: {self._calibration_source}\n"
             f"Dispersion: {self.spectrum_dispersion:.1f} eV/ch\n"
-            f"Offset: {self.spectrum_offset:.1f} eV"
+            f"Offset: {self.spectrum_offset:.1f} eV\n"
+            f"Live/Real time: {self.live_time_s if self.live_time_s is not None else '-'} / "
+            f"{self.real_time_s if self.real_time_s is not None else '-'} s"
         )
         calib_info.setWordWrap(True)
         layout.addWidget(calib_info)
@@ -885,6 +950,10 @@ class SpectrumAnalysisManager:
         clear_btn = QtWidgets.QPushButton("Clear Results")
         clear_btn.clicked.connect(self._on_clear_results_clicked)
         button_layout.addWidget(clear_btn)
+
+        remove_btn = QtWidgets.QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self._on_remove_selected_region_clicked)
+        button_layout.addWidget(remove_btn)
 
         layout.addLayout(button_layout)
 
@@ -1013,7 +1082,413 @@ class SpectrumAnalysisManager:
 
     def _on_clear_results_clicked(self) -> None:
         """Handle clear results button click."""
+        self._safe_remove_preview_roi()
+        self._restore_region_draw_handlers()
+        self.active_region_selector = False
         self.clear_integration_regions()
         if self.results_table:
             self.results_table.setRowCount(0)
         self.logger.debug("Integration results cleared")
+
+    def _on_remove_selected_region_clicked(self) -> None:
+        """Remove the region tied to the selected results-table row."""
+        if self.results_table is None:
+            return
+        row = self.results_table.currentRow()
+        if row < 0:
+            return
+        item = self.results_table.item(row, 0)
+        if item is None:
+            return
+        try:
+            region_id = int(item.text())
+        except Exception:
+            return
+        self.remove_integration_region(region_id)
+        self._refresh_results_table()
+
+    def begin_rectangle_region_selection(self) -> None:
+        """Enter click-drag rectangle ROI mode for EDS integration."""
+        plot = getattr(self.viewer, "p1", None)
+        if plot is None or not hasattr(plot, "vb"):
+            return
+
+        vb = plot.vb
+        if self._region_draw_prev_handlers is None:
+            self._region_draw_prev_handlers = (
+                vb.mousePressEvent,
+                vb.mouseMoveEvent,
+                vb.mouseReleaseEvent,
+                getattr(vb, "mouseDragEvent", None),
+            )
+
+        vb.mousePressEvent = self._on_region_mouse_press
+        vb.mouseMoveEvent = self._on_region_mouse_move
+        vb.mouseReleaseEvent = self._on_region_mouse_release
+        if getattr(vb, "mouseDragEvent", None) is not None:
+            vb.mouseDragEvent = self._on_region_mouse_drag
+
+        self.active_region_selector = True
+        if not self._region_hover_hint_shown:
+            self._region_hover_hint_shown = True
+            QtWidgets.QMessageBox.information(
+                self.edx_panel,
+                "EDS Region Selection",
+                "Click and drag on the image to define an integration rectangle.",
+            )
+
+    def _restore_region_draw_handlers(self) -> None:
+        """Restore ViewBox mouse handlers after region selection."""
+        plot = getattr(self.viewer, "p1", None)
+        if plot is None or not hasattr(plot, "vb"):
+            return
+        if self._region_draw_prev_handlers is None:
+            return
+        press, move, release, drag = self._region_draw_prev_handlers
+        vb = plot.vb
+        vb.mousePressEvent = press
+        vb.mouseMoveEvent = move
+        vb.mouseReleaseEvent = release
+        if drag is not None:
+            vb.mouseDragEvent = drag
+        self._region_draw_prev_handlers = None
+
+    def _safe_remove_preview_roi(self) -> None:
+        """Remove temporary preview ROI if present."""
+        if self._region_draw_preview is None:
+            return
+        plot = getattr(self.viewer, "p1", None)
+        try:
+            if plot is not None:
+                plot.removeItem(self._region_draw_preview)
+        except Exception:
+            pass
+        self._region_draw_preview = None
+
+    def _on_region_mouse_press(self, event: Any) -> None:
+        """Handle region-draw mouse press."""
+        plot = getattr(self.viewer, "p1", None)
+        if plot is None:
+            return
+        scene_pos = event.scenePos()
+        if not plot.sceneBoundingRect().contains(scene_pos):
+            return
+        view_pos = plot.vb.mapSceneToView(scene_pos)
+        self._region_draw_start = (view_pos.x(), view_pos.y())
+        self._safe_remove_preview_roi()
+        preview = pg.RectROI(
+            [view_pos.x(), view_pos.y()],
+            [1e-9, 1e-9],
+            pen=pg.mkPen(255, 165, 0, width=2, style=QtCore.Qt.DashLine),
+            movable=False,
+            rotatable=False,
+            resizable=False,
+        )
+        self._region_draw_preview = preview
+        plot.addItem(preview)
+        event.accept()
+
+    def _on_region_mouse_move(self, event: Any) -> None:
+        """Handle region-draw mouse move preview."""
+        if self._region_draw_start is None or self._region_draw_preview is None:
+            return
+        plot = getattr(self.viewer, "p1", None)
+        if plot is None:
+            return
+        scene_pos = event.scenePos()
+        if not plot.sceneBoundingRect().contains(scene_pos):
+            return
+        view_pos = plot.vb.mapSceneToView(scene_pos)
+        x0, y0 = self._region_draw_start
+        x1 = view_pos.x()
+        y1 = view_pos.y()
+        left = min(x0, x1)
+        top = min(y0, y1)
+        width = max(abs(x1 - x0), 1e-9)
+        height = max(abs(y1 - y0), 1e-9)
+        self._region_draw_preview.setPos((left, top), update=False)
+        self._region_draw_preview.setSize((width, height), update=False)
+        event.accept()
+
+    def _finalize_region_from_end(self, end_x: float, end_y: float) -> None:
+        """Finalize ROI draw, persist region, and refresh integration results."""
+        if self._region_draw_start is None:
+            return
+        x0, y0 = self._region_draw_start
+        self._region_draw_start = None
+        left = min(x0, end_x)
+        top = min(y0, end_y)
+        width = abs(end_x - x0)
+        height = abs(end_y - y0)
+        self._safe_remove_preview_roi()
+        if width <= 0.0 or height <= 0.0:
+            self._restore_region_draw_handlers()
+            self.active_region_selector = False
+            return
+
+        region_id = self.add_integration_region(
+            {
+                "type": "rectangle",
+                "coordinates": [
+                    (left, top),
+                    (left + width, top),
+                    (left + width, top + height),
+                    (left, top + height),
+                ],
+                "calibration_units": str(getattr(self.viewer.ax_x, "units", "px") or "px"),
+            }
+        )
+
+        plot = getattr(self.viewer, "p1", None)
+        if plot is not None:
+            roi_item = pg.RectROI(
+                [left, top],
+                [width, height],
+                pen=pg.mkPen(0, 255, 255, width=2),
+                movable=True,
+                rotatable=False,
+            )
+            roi_item.addScaleHandle((1, 1), (0, 0))
+            roi_item.addScaleHandle((0, 0), (1, 1))
+            roi_item.sigRegionChanged.connect(
+                lambda _roi=roi_item, rid=region_id: self._on_roi_item_changed(rid, _roi)
+            )
+            plot.addItem(roi_item)
+            self.region_rois[region_id] = roi_item
+
+        self._refresh_results_table()
+        self._restore_region_draw_handlers()
+        self.active_region_selector = False
+
+    def _on_region_mouse_release(self, event: Any) -> None:
+        """Handle region-draw mouse release completion."""
+        plot = getattr(self.viewer, "p1", None)
+        if plot is None:
+            return
+        scene_pos = event.scenePos()
+        if not plot.sceneBoundingRect().contains(scene_pos):
+            self._safe_remove_preview_roi()
+            self._restore_region_draw_handlers()
+            self.active_region_selector = False
+            return
+        view_pos = plot.vb.mapSceneToView(scene_pos)
+        self._finalize_region_from_end(view_pos.x(), view_pos.y())
+        event.accept()
+
+    def _on_region_mouse_drag(self, event: Any) -> None:
+        """Support drag events for robust region creation."""
+        plot = getattr(self.viewer, "p1", None)
+        if plot is None:
+            return
+        scene_pos = event.scenePos()
+        if not plot.sceneBoundingRect().contains(scene_pos):
+            if event.isFinish():
+                self._safe_remove_preview_roi()
+                self._restore_region_draw_handlers()
+                self.active_region_selector = False
+            event.accept()
+            return
+        view_pos = plot.vb.mapSceneToView(scene_pos)
+        if event.isStart() or self._region_draw_start is None:
+            class _Evt:
+                def __init__(self, pos: Any):
+                    self._pos = pos
+                def scenePos(self) -> Any:
+                    return self._pos
+                def accept(self) -> None:
+                    return
+            self._on_region_mouse_press(_Evt(scene_pos))
+        elif event.isFinish():
+            self._finalize_region_from_end(view_pos.x(), view_pos.y())
+        else:
+            class _Evt:
+                def __init__(self, pos: Any):
+                    self._pos = pos
+                def scenePos(self) -> Any:
+                    return self._pos
+                def accept(self) -> None:
+                    return
+            self._on_region_mouse_move(_Evt(scene_pos))
+        event.accept()
+
+    def _on_roi_item_changed(self, region_id: int, roi_item: pg.RectROI) -> None:
+        """Update stored region contract when ROI is moved/resized."""
+        region = next((r for r in self.integration_regions if r.region_id == region_id), None)
+        if region is None:
+            return
+        x = float(roi_item.pos().x())
+        y = float(roi_item.pos().y())
+        w = float(roi_item.size().x())
+        h = float(roi_item.size().y())
+        updated = replace(
+            region,
+            coordinates=[(x, y), (x + w, y), (x + w, y + h), (x, y + h)],
+        )
+        for idx, existing in enumerate(self.integration_regions):
+            if existing.region_id == region_id:
+                self.integration_regions[idx] = updated
+                break
+        self._refresh_results_table()
+
+    def _view_xy_to_pixel_rc(self, x: float, y: float) -> Optional[Tuple[int, int]]:
+        """Convert calibrated view coordinates to pixel row/column indices."""
+        data = getattr(self.viewer, "data", None)
+        ax_x = getattr(self.viewer, "ax_x", None)
+        ax_y = getattr(self.viewer, "ax_y", None)
+        if data is None or ax_x is None or ax_y is None:
+            return None
+        try:
+            col = int(round((x - float(ax_x.offset)) / float(ax_x.scale)))
+            row = int(round((y - float(ax_y.offset)) / float(ax_y.scale)))
+        except Exception:
+            return None
+        if row < 0 or col < 0:
+            return None
+        if row >= int(data.shape[0]) or col >= int(data.shape[1]):
+            return None
+        return row, col
+
+    def update_hover_spectrum(self, x: float, y: float) -> None:
+        """Update spectrum plot from current cursor location."""
+        if self.spectrum_plot is None:
+            return
+        now = monotonic()
+        if now - self._last_hover_update_s < self._hover_interval_s:
+            return
+        self._last_hover_update_s = now
+
+        pixel = self._view_xy_to_pixel_rc(x, y)
+        if pixel is None:
+            return
+        row, col = pixel
+
+        energy_axis, counts, source_label = self._resolve_hover_spectrum(row, col)
+        if energy_axis is None or counts is None:
+            if self.hover_status_label is not None:
+                self.hover_status_label.setText(
+                    f"Hover ({col}, {row}) - no spectrum data available"
+                )
+            return
+
+        self.spectrum_plot.clear()
+        self.spectrum_plot.plot(energy_axis, counts, pen=pg.mkPen(0, 255, 255, width=2))
+        if source_label == "elemental maps":
+            self.spectrum_plot.setLabel("bottom", "Element index")
+        else:
+            self.spectrum_plot.setLabel("bottom", "Energy", units="eV")
+        # Keep both axes responsive to the hovered signal range.
+        self.spectrum_plot.enableAutoRange(x=True, y=True)
+        view_box = self.spectrum_plot.getViewBox()
+        if view_box is not None:
+            view_box.autoRange()
+        if self.hover_status_label is not None:
+            source_text = source_label
+            if source_label == "elemental maps":
+                source_text = "elemental maps (pseudo-spectrum; limited resolution)"
+            self.hover_status_label.setText(
+                f"Hover ({col}, {row}) from {source_text}"
+            )
+
+    def _resolve_hover_spectrum(
+        self, row: int, col: int
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], str]:
+        """Resolve the best available spectrum for a pixel location."""
+        selected_names = list(self.active_spectra) if self.active_spectra else list(self.spectra.keys())
+        for name in selected_names:
+            data = self.spectra.get(name)
+            if data is None:
+                continue
+            arr = np.asarray(data)
+            if arr.ndim == 1:
+                energy = self.spectrum_offset + np.arange(arr.size) * self.spectrum_dispersion
+                return energy.astype(float), arr.astype(float), name
+            if arr.ndim == 3 and row < arr.shape[0] and col < arr.shape[1]:
+                counts = arr[row, col, :]
+                energy = self.spectrum_offset + np.arange(counts.size) * self.spectrum_dispersion
+                return energy.astype(float), counts.astype(float), name
+            if arr.ndim == 2 and row < arr.shape[0]:
+                counts = arr[row, :]
+                energy = self.spectrum_offset + np.arange(counts.size) * self.spectrum_dispersion
+                return energy.astype(float), counts.astype(float), name
+
+        # Fallback: pseudo spectrum from elemental map intensities at this pixel.
+        elements: List[str] = []
+        values: List[float] = []
+        for element, map_data in sorted(self.elemental_maps.items()):
+            if map_data is None:
+                continue
+            arr = np.asarray(map_data)
+            if arr.ndim != 2 or row >= arr.shape[0] or col >= arr.shape[1]:
+                continue
+            elements.append(element)
+            values.append(float(arr[row, col]))
+
+        if values:
+            counts = np.asarray(values, dtype=float)
+            energy = np.arange(len(values), dtype=float)
+            return energy, counts, "elemental maps"
+        return None, None, "none"
+
+    def _region_bounds_in_pixels(self, region: EDSROIRegion) -> Optional[Tuple[int, int, int, int]]:
+        """Return clamped pixel bounds [r0:r1, c0:c1] for a rectangular region."""
+        if len(region.coordinates) < 2:
+            return None
+        xs = [p[0] for p in region.coordinates]
+        ys = [p[1] for p in region.coordinates]
+        top_left = self._view_xy_to_pixel_rc(min(xs), min(ys))
+        bottom_right = self._view_xy_to_pixel_rc(max(xs), max(ys))
+        if top_left is None or bottom_right is None:
+            return None
+        r0, c0 = top_left
+        r1, c1 = bottom_right
+        if r1 < r0:
+            r0, r1 = r1, r0
+        if c1 < c0:
+            c0, c1 = c1, c0
+        return r0, r1 + 1, c0, c1 + 1
+
+    def _compute_region_element_counts(self, region: EDSROIRegion) -> List[Tuple[str, float]]:
+        """Compute simple integrated counts from elemental maps within region."""
+        bounds = self._region_bounds_in_pixels(region)
+        if bounds is None:
+            return []
+        r0, r1, c0, c1 = bounds
+        rows: List[Tuple[str, float]] = []
+        for element, map_data in sorted(self.elemental_maps.items()):
+            if map_data is None:
+                continue
+            arr = np.asarray(map_data)
+            if arr.ndim != 2:
+                continue
+            r1c = min(r1, arr.shape[0])
+            c1c = min(c1, arr.shape[1])
+            if r0 >= r1c or c0 >= c1c:
+                continue
+            counts = float(np.nansum(arr[r0:r1c, c0:c1c]))
+            rows.append((element, counts))
+        return rows
+
+    def _refresh_results_table(self) -> None:
+        """Rebuild integration table rows from current region contracts."""
+        if self.results_table is None:
+            return
+        self.results_table.setRowCount(0)
+        for region in self.integration_regions:
+            rows = self._compute_region_element_counts(region)
+            if not rows:
+                row_index = self.results_table.rowCount()
+                self.results_table.insertRow(row_index)
+                self.results_table.setItem(row_index, 0, QtWidgets.QTableWidgetItem(str(region.region_id)))
+                self.results_table.setItem(row_index, 1, QtWidgets.QTableWidgetItem("(no data)"))
+                self.results_table.setItem(row_index, 2, QtWidgets.QTableWidgetItem("0"))
+                self.results_table.setItem(row_index, 3, QtWidgets.QTableWidgetItem("-"))
+                self.results_table.setItem(row_index, 4, QtWidgets.QTableWidgetItem("-"))
+                continue
+            for element, counts in rows:
+                row_index = self.results_table.rowCount()
+                self.results_table.insertRow(row_index)
+                self.results_table.setItem(row_index, 0, QtWidgets.QTableWidgetItem(str(region.region_id)))
+                self.results_table.setItem(row_index, 1, QtWidgets.QTableWidgetItem(element))
+                self.results_table.setItem(row_index, 2, QtWidgets.QTableWidgetItem(f"{counts:.6g}"))
+                self.results_table.setItem(row_index, 3, QtWidgets.QTableWidgetItem("-"))
+                self.results_table.setItem(row_index, 4, QtWidgets.QTableWidgetItem("-"))
