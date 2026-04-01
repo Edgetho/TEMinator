@@ -1912,13 +1912,31 @@ class SpectrumAnalysisManager:
         if not windows or not lines or len(windows) != len(lines):
             return []
 
+        return self._integrate_spectrum_windows(
+            energy=energy,
+            spectrum=spectrum,
+            windows=windows,
+            lines=lines,
+            background_mode=self.integration_settings.background_mode,
+        )
+
+    @staticmethod
+    def _integrate_spectrum_windows(
+        *,
+        energy: np.ndarray,
+        spectrum: np.ndarray,
+        windows: Sequence[Tuple[float, float]],
+        lines: Sequence[str],
+        background_mode: str,
+    ) -> List[Tuple[str, float]]:
+        """Integrate per-element counts from explicit line windows on one spectrum."""
         by_element: Dict[str, float] = {}
         for (low_ev, high_ev), line_label in zip(windows, lines):
             mask = (energy >= low_ev) & (energy <= high_ev)
             if not np.any(mask):
                 continue
             signal_counts = float(np.nansum(spectrum[mask]))
-            if self.integration_settings.background_mode == "auto":
+            if background_mode == "auto":
                 width = max(float(high_ev - low_ev), 1.0)
                 pad = 0.25 * width
                 left_mask = (energy >= (low_ev - width - pad)) & (energy <= (low_ev - pad))
@@ -2147,6 +2165,22 @@ class SpectrumAnalysisManager:
                 "real_time_s": self.real_time_s,
                 "quant_method": self._current_quant_method(),
                 "quant_factors": self._current_quant_factor_text(),
+                "integration_settings": {
+                    "background_mode": self.integration_settings.background_mode,
+                    "integration_windows_ev": [
+                        [float(lo), float(hi)]
+                        for lo, hi in self.integration_settings.integration_windows_ev
+                    ],
+                    "included_lines": list(self.integration_settings.included_lines),
+                },
+                "model_fit": {
+                    "status_text": (
+                        self.model_status_label.text()
+                        if self.model_status_label is not None
+                        else ""
+                    ),
+                    "available_spectra": sorted(list(self.spectra.keys())),
+                },
                 "regions": regions,
             }
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
