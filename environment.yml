@@ -7,5 +7,6 @@ dependencies:
     - scipy
     - pyqtgraph
     - pyqt=5.15.*
+    - openpyxl
     - hyperspy
     - sparse #enable loading of spectrum images

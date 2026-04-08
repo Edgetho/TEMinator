@@ -8,5 +8,6 @@ dependencies:
     - pyqtgraph
     - pyqt=5.15.*
     - qt-wayland
+    - openpyxl
     - hyperspy
     - sparse #enable loading of spectrum images

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -72,7 +73,7 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         btn_rename.clicked.connect(self._begin_inline_rename_selected)
         btn_copy = QtWidgets.QPushButton("Copy Selected")
         btn_copy.clicked.connect(self.copy_selected)
-        btn_export = QtWidgets.QPushButton("Export as CSV")
+        btn_export = QtWidgets.QPushButton("Export as XLSX")
         btn_export.clicked.connect(self.export_as_csv)
         btn_layout.addWidget(btn_clear)
         btn_layout.addWidget(btn_delete)
@@ -118,6 +119,7 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
         *,
         measurement_id: int | None = None,
         measurement_type: str = "distance",
+        measurement_parent=None,
     ):
         """Add a measurement to the history.
 
@@ -125,12 +127,15 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
             measurement_text: Rendered measurement label text shown in history.
             measurement_id: Numeric identifier for the measurement history entry.
             measurement_type: Measurement category, typically distance or profile.
+            measurement_parent: Optional measurement controller object used to
+                resolve detailed profile data for export.
         """
         item = QtWidgets.QListWidgetItem(measurement_text)
         metadata = {
             "id": measurement_id,
             "type": measurement_type,
             "text": measurement_text,
+            "parent": measurement_parent,
         }
         item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
         item.setData(QtCore.Qt.UserRole, metadata)
@@ -361,39 +366,160 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
             )
 
     def export_as_csv(self):
-        """Export measurements to CSV file."""
+        """Export measurements to XLSX workbook with one sheet per profile."""
         if not self.measurements:
             logger.debug("MeasurementHistory export requested with no measurements")
             QtWidgets.QMessageBox.warning(self, "No Data", "No measurements to export!")
             return
 
         file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export Measurements", "", "CSV Files (*.csv)"
+            self, "Export Measurements", "", "Excel Files (*.xlsx)"
         )
 
         if file_path:
             try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write("Measurement\n")
-                    for measurement in self.measurements:
-                        f.write(f"{measurement.get('text', '')}\n")
+                from openpyxl import Workbook
+
+                workbook = Workbook()
+                history_sheet = workbook.active
+                history_sheet.title = "History"
+                history_sheet.append(["Measurement"])
+                for measurement in self.measurements:
+                    history_sheet.append([str(measurement.get("text", ""))])
+
+                profile_sheet_count = 0
+                for measurement in self.measurements:
+                    if str(measurement.get("type", "distance")) != "profile":
+                        continue
+
+                    profile_id = measurement.get("id")
+                    sheet_name = self._build_profile_sheet_name(profile_id)
+                    profile_sheet = workbook.create_sheet(title=sheet_name)
+                    profile_sheet_count += 1
+
+                    profile_record = self._resolve_profile_record(measurement)
+                    if not isinstance(profile_record, dict):
+                        profile_sheet.append(["note", "Profile data unavailable"])
+                        profile_sheet.append(["profile_id", profile_id])
+                        continue
+
+                    title = str(profile_record.get("title", f"Profile Measurement #{profile_id}"))
+                    x_axis_label = str(profile_record.get("x_axis_label", "Distance (px)"))
+                    integration_width = profile_record.get("integration_width_px", 0.0)
+                    p1 = profile_record.get("p1")
+                    p2 = profile_record.get("p2")
+
+                    profile_sheet.append(["profile_id", profile_id])
+                    profile_sheet.append(["title", title])
+                    profile_sheet.append(["x_axis_label", x_axis_label])
+                    profile_sheet.append(["integration_width_px", integration_width])
+                    profile_sheet.append(["p1", "" if p1 is None else str(p1)])
+                    profile_sheet.append(["p2", "" if p2 is None else str(p2)])
+                    profile_sheet.append([])
+
+                    distances = np.asarray(profile_record.get("distances", []), dtype=float)
+                    intensities = profile_record.get("intensities")
+                    x_column_label = self._x_axis_column_name(x_axis_label)
+
+                    if isinstance(intensities, dict):
+                        trace_names = [str(name) for name in intensities.keys()]
+                        trace_arrays = {
+                            str(name): np.asarray(values, dtype=float)
+                            for name, values in intensities.items()
+                        }
+                        profile_sheet.append([x_column_label, *trace_names])
+                        row_count = max(
+                            [len(distances)]
+                            + [len(arr) for arr in trace_arrays.values()]
+                        )
+                        for idx in range(row_count):
+                            row = [
+                                float(distances[idx]) if idx < len(distances) else None,
+                            ]
+                            for trace_name in trace_names:
+                                values = trace_arrays[trace_name]
+                                row.append(float(values[idx]) if idx < len(values) else None)
+                            profile_sheet.append(row)
+                    else:
+                        intensity_array = np.asarray(intensities, dtype=float)
+                        profile_sheet.append([x_column_label, "Intensity"])
+                        row_count = max(len(distances), len(intensity_array))
+                        for idx in range(row_count):
+                            row = [
+                                float(distances[idx]) if idx < len(distances) else None,
+                                float(intensity_array[idx]) if idx < len(intensity_array) else None,
+                            ]
+                            profile_sheet.append(row)
+
+                if not file_path.lower().endswith(".xlsx"):
+                    file_path = f"{file_path}.xlsx"
+                workbook.save(file_path)
+
                 logger.debug(
-                    "MeasurementHistory exported CSV: path=%s count=%s",
+                    "MeasurementHistory exported workbook: path=%s count=%s profile_sheets=%s",
                     file_path,
                     len(self.measurements),
+                    profile_sheet_count,
                 )
                 QtWidgets.QMessageBox.information(
-                    self, "Success", f"Exported to {file_path}"
+                    self, "Success", f"Exported workbook to {file_path}"
+                )
+            except ImportError:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Missing Dependency",
+                    "openpyxl is required for XLSX export but is not installed.",
                 )
             except Exception as e:  # pragma: no cover - I/O error path
                 logger.debug(
-                    "MeasurementHistory export failed: path=%s error=%s",
+                    "MeasurementHistory workbook export failed: path=%s error=%s",
                     file_path,
                     str(e),
                 )
                 QtWidgets.QMessageBox.critical(
-                    self, "Error", f"Could not export: {str(e)}"
+                    self, "Error", f"Could not export workbook: {str(e)}"
                 )
+
+    def _resolve_profile_record(self, measurement: dict[str, Any]) -> dict[str, Any] | None:
+        """Return stored profile record for a measurement history item."""
+        measurement_parent = measurement.get("parent")
+        profile_id = measurement.get("id")
+        if measurement_parent is None or profile_id is None:
+            logger.debug(
+                "MeasurementHistory profile export missing parent/id: id=%s", profile_id
+            )
+            return None
+
+        viewer = getattr(measurement_parent, "viewer", None)
+        if viewer is None:
+            logger.debug(
+                "MeasurementHistory profile export missing viewer: id=%s", profile_id
+            )
+            return None
+
+        profile_items = getattr(viewer, "profile_measurement_items", None)
+        if not isinstance(profile_items, dict):
+            logger.debug(
+                "MeasurementHistory profile export missing profile mapping: id=%s",
+                profile_id,
+            )
+            return None
+        return profile_items.get(profile_id)
+
+    @staticmethod
+    def _build_profile_sheet_name(profile_id: Any) -> str:
+        """Return a safe Excel worksheet name for profile data."""
+        raw = f"Profile_{profile_id}"
+        sanitized = re.sub(r"[\\/*?:\[\]]", "_", raw)
+        return sanitized[:31] if sanitized else "Profile"
+
+    @staticmethod
+    def _x_axis_column_name(x_axis_label: str) -> str:
+        """Derive concise column header from axis label."""
+        unit_match = re.search(r"\(([^)]+)\)", x_axis_label)
+        if unit_match:
+            return f"distance_{unit_match.group(1).strip()}"
+        return "distance"
 
 
 class LineProfileWindow(QtWidgets.QMainWindow):
@@ -449,10 +575,10 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         )
 
         control_row = QtWidgets.QHBoxLayout()
-        
+
         integration_label = QtWidgets.QLabel("Integration Width (px):")
         control_row.addWidget(integration_label)
-        
+
         self.integration_width_spinbox = QtWidgets.QDoubleSpinBox()
         self.integration_width_spinbox.setMinimum(0.0)
         self.integration_width_spinbox.setMaximum(100.0)
@@ -463,13 +589,15 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         )
         self.integration_width_spinbox.valueChanged.connect(self._on_width_changed)
         control_row.addWidget(self.integration_width_spinbox)
-        
+
         control_row.addStretch()
 
         button_row = QtWidgets.QHBoxLayout()
         button_row.addStretch()
         self.btn_refresh = QtWidgets.QPushButton("Refresh")
-        self.btn_refresh.setToolTip("Recompute this profile from the current image view")
+        self.btn_refresh.setToolTip(
+            "Recompute this profile from the current image view"
+        )
         self.btn_refresh.setEnabled(self._on_refresh is not None)
         self.btn_refresh.clicked.connect(self._refresh_requested)
         button_row.addWidget(self.btn_refresh)

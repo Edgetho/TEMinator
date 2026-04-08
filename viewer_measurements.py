@@ -1323,6 +1323,7 @@ class MeasurementController:
         *,
         measurement_id: int | None = None,
         measurement_type: str = "distance",
+        measurement_parent: Any = None,
     ) -> None:
         """Add a measurement entry to the history window.
 
@@ -1333,6 +1334,8 @@ class MeasurementController:
             measurement_text: The formatted measurement label text.
             measurement_id: Optional ID number for the measurement.
             measurement_type: Type of measurement ("distance" or "profile").
+            measurement_parent: Optional controller object used to resolve
+                source measurement details during export.
         """
         viewer = self.viewer
         if viewer.measurement_history_window is None:
@@ -1352,6 +1355,7 @@ class MeasurementController:
             measurement_text,
             measurement_id=measurement_id,
             measurement_type=measurement_type,
+            measurement_parent=measurement_parent,
         )
         self.logger.debug(
             "Measurement added to history: id=%s type=%s text=%s",
@@ -1487,6 +1491,7 @@ class MeasurementController:
             line_label,
             measurement_id=profile_id,
             measurement_type="profile",
+            measurement_parent=self,
         )
         self.logger.debug(
             "Profile measurement added: id=%s samples=%s midpoint=(%.6g, %.6g)",

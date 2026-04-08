@@ -224,7 +224,7 @@ Measurement management:
 
 - Clicking a label selects that measurement; **Delete Selected** removes it from the image.
 - **Clear Measurements** removes all measurement graphics and clears the history.
-- The **Measurement History** window lists every measurement taken and supports clearing, deleting, copying to clipboard, and CSV export.
+- The **Measurement History** window lists every measurement taken and supports clearing, deleting, copying to clipboard, and XLSX export (with one worksheet per profile measurement).
 
 ### Selecting peaks and exporting CSV
 
