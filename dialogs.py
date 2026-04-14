@@ -534,7 +534,11 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         trace_colors: Optional[Dict[str, Any]] = None,
         on_refresh: Optional[Callable[[], None]] = None,
         on_integration_width_changed: Optional[Callable[[float], None]] = None,
+        on_radial_length_changed: Optional[Callable[[float], None]] = None,
+        on_azimuthal_span_changed: Optional[Callable[[float], None]] = None,
         integration_width_px: float = 0.0,
+        radial_length_px: Optional[float] = None,
+        azimuthal_span_deg: Optional[float] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         """Initialize the line profile plotting window.
@@ -548,7 +552,11 @@ class LineProfileWindow(QtWidgets.QMainWindow):
             trace_colors: Optional mapping of trace name to pyqtgraph-compatible color.
             on_refresh: Optional callback to refresh profile from current view state.
             on_integration_width_changed: Optional callback when integration width changes.
+            on_radial_length_changed: Optional callback when radial length changes.
+            on_azimuthal_span_changed: Optional callback when azimuthal span changes.
             integration_width_px: Initial integration width in pixels.
+            radial_length_px: Optional initial radial profile length in pixels.
+            azimuthal_span_deg: Optional initial azimuthal span in degrees.
             parent: Optional parent widget.
         """
         super().__init__(parent)
@@ -556,7 +564,11 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         self.resize(640, 480)
         self._on_refresh = on_refresh
         self._on_integration_width_changed = on_integration_width_changed
+        self._on_radial_length_changed = on_radial_length_changed
+        self._on_azimuthal_span_changed = on_azimuthal_span_changed
         self.integration_width_px = integration_width_px
+        self.radial_length_px = radial_length_px
+        self.azimuthal_span_deg = azimuthal_span_deg
 
         central = QtWidgets.QWidget(self)
         self.setCentralWidget(central)
@@ -589,6 +601,28 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         )
         self.integration_width_spinbox.valueChanged.connect(self._on_width_changed)
         control_row.addWidget(self.integration_width_spinbox)
+
+        self.radial_length_spinbox: QtWidgets.QDoubleSpinBox | None = None
+        if radial_length_px is not None:
+            control_row.addWidget(QtWidgets.QLabel("Radial Length (px):"))
+            self.radial_length_spinbox = QtWidgets.QDoubleSpinBox()
+            self.radial_length_spinbox.setMinimum(1.0)
+            self.radial_length_spinbox.setMaximum(5000.0)
+            self.radial_length_spinbox.setSingleStep(5.0)
+            self.radial_length_spinbox.setValue(float(radial_length_px))
+            self.radial_length_spinbox.valueChanged.connect(self._on_radial_length_value_changed)
+            control_row.addWidget(self.radial_length_spinbox)
+
+        self.azimuthal_span_spinbox: QtWidgets.QDoubleSpinBox | None = None
+        if azimuthal_span_deg is not None:
+            control_row.addWidget(QtWidgets.QLabel("Azimuthal Span (deg):"))
+            self.azimuthal_span_spinbox = QtWidgets.QDoubleSpinBox()
+            self.azimuthal_span_spinbox.setMinimum(0.1)
+            self.azimuthal_span_spinbox.setMaximum(180.0)
+            self.azimuthal_span_spinbox.setSingleStep(0.5)
+            self.azimuthal_span_spinbox.setValue(float(azimuthal_span_deg))
+            self.azimuthal_span_spinbox.valueChanged.connect(self._on_azimuthal_span_value_changed)
+            control_row.addWidget(self.azimuthal_span_spinbox)
 
         control_row.addStretch()
 
@@ -679,6 +713,44 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         if self._on_integration_width_changed is not None:
             self._on_integration_width_changed(value)
         logger.debug("Integration width changed to %.1f px", value)
+
+    def _on_radial_length_value_changed(self, value: float) -> None:
+        """Handle radial length updates for linked peak-collection profiles."""
+        self.radial_length_px = float(value)
+        if self._on_radial_length_changed is not None:
+            self._on_radial_length_changed(float(value))
+
+    def _on_azimuthal_span_value_changed(self, value: float) -> None:
+        """Handle azimuthal span updates for linked peak-collection profiles."""
+        self.azimuthal_span_deg = float(value)
+        if self._on_azimuthal_span_changed is not None:
+            self._on_azimuthal_span_changed(float(value))
+
+    def set_shared_parameters(
+        self,
+        *,
+        integration_width_px: Optional[float] = None,
+        radial_length_px: Optional[float] = None,
+        azimuthal_span_deg: Optional[float] = None,
+    ) -> None:
+        """Synchronize optional shared control widgets without recursive callbacks."""
+        if integration_width_px is not None:
+            self.integration_width_px = float(integration_width_px)
+            self.integration_width_spinbox.blockSignals(True)
+            self.integration_width_spinbox.setValue(float(integration_width_px))
+            self.integration_width_spinbox.blockSignals(False)
+
+        if radial_length_px is not None and self.radial_length_spinbox is not None:
+            self.radial_length_px = float(radial_length_px)
+            self.radial_length_spinbox.blockSignals(True)
+            self.radial_length_spinbox.setValue(float(radial_length_px))
+            self.radial_length_spinbox.blockSignals(False)
+
+        if azimuthal_span_deg is not None and self.azimuthal_span_spinbox is not None:
+            self.azimuthal_span_deg = float(azimuthal_span_deg)
+            self.azimuthal_span_spinbox.blockSignals(True)
+            self.azimuthal_span_spinbox.setValue(float(azimuthal_span_deg))
+            self.azimuthal_span_spinbox.blockSignals(False)
 
 
 class MetadataWindow(QtWidgets.QMainWindow):

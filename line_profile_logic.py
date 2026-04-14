@@ -294,6 +294,44 @@ def world_distance_axis(
     return np.sqrt(dx_units**2 + dy_units**2)
 
 
+def cumulative_path_length_axis(
+    *,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    rect_mapping: Optional[RectMapping],
+    axis_calibration: Optional[AxisCalibration],
+) -> np.ndarray:
+    """Compute cumulative path length along a polyline in world units.
+
+    Args:
+        xs: Sampled X coordinates in pixel space.
+        ys: Sampled Y coordinates in pixel space.
+        rect_mapping: Optional view-to-pixel mapping.
+        axis_calibration: Optional axis calibration values.
+
+    Returns:
+        Cumulative distance from the first sample point along the sampled path.
+    """
+    if xs.size == 0:
+        return np.asarray([], dtype=float)
+
+    if rect_mapping is not None:
+        world_xs = xs / rect_mapping.scale_x_px
+        world_ys = ys / rect_mapping.scale_y_px
+    elif axis_calibration is not None:
+        world_xs = xs * axis_calibration.scale_x
+        world_ys = ys * axis_calibration.scale_y
+    else:
+        world_xs = xs
+        world_ys = ys
+
+    dx = np.diff(world_xs, prepend=world_xs[0])
+    dy = np.diff(world_ys, prepend=world_ys[0])
+    segment_lengths = np.sqrt(dx**2 + dy**2)
+    segment_lengths[0] = 0.0
+    return np.cumsum(segment_lengths)
+
+
 def scaled_distance_axis(
     *,
     distances_world: np.ndarray,
@@ -396,3 +434,133 @@ def sample_perpendicular_strip(
         accumulated += sampler(image, xs_offset, ys_offset)
 
     return accumulated / num_strips
+
+
+def radial_line_endpoints_through_peak(
+    *,
+    center_x_px: float,
+    center_y_px: float,
+    peak_x_px: float,
+    peak_y_px: float,
+    radial_length_px: float,
+) -> tuple[float, float, float, float] | None:
+    """Return endpoints for a radial line centered on the selected peak.
+
+    Args:
+        center_x_px: Diffraction-center x coordinate in pixels.
+        center_y_px: Diffraction-center y coordinate in pixels.
+        peak_x_px: Peak x coordinate in pixels.
+        peak_y_px: Peak y coordinate in pixels.
+        radial_length_px: Total radial segment length in pixels.
+
+    Returns:
+        ``(x0, y0, x1, y1)`` endpoints in pixel coordinates, or ``None`` when
+        the center and peak coincide.
+    """
+    dx = float(peak_x_px) - float(center_x_px)
+    dy = float(peak_y_px) - float(center_y_px)
+    norm = float(np.hypot(dx, dy))
+    if norm <= 0.0 or not np.isfinite(norm):
+        return None
+
+    ux = dx / norm
+    uy = dy / norm
+    half = max(0.5, float(radial_length_px) * 0.5)
+    return (
+        float(peak_x_px) - half * ux,
+        float(peak_y_px) - half * uy,
+        float(peak_x_px) + half * ux,
+        float(peak_y_px) + half * uy,
+    )
+
+
+def arc_coordinates_centered_on_peak_angle(
+    *,
+    center_x_px: float,
+    center_y_px: float,
+    peak_x_px: float,
+    peak_y_px: float,
+    azimuthal_span_deg: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Sample an arc centered on the peak polar angle at fixed peak radius.
+
+    Returns angles in degrees relative to the peak angle.
+    """
+    dx = float(peak_x_px) - float(center_x_px)
+    dy = float(peak_y_px) - float(center_y_px)
+    radius_px = float(np.hypot(dx, dy))
+    if radius_px <= 0.0 or not np.isfinite(radius_px):
+        return None
+
+    span = max(0.1, float(azimuthal_span_deg))
+    span_rad = float(np.deg2rad(span))
+    theta_center = float(np.arctan2(dy, dx))
+    theta_start = theta_center - 0.5 * span_rad
+    theta_end = theta_center + 0.5 * span_rad
+
+    arc_length_px = radius_px * span_rad
+    sample_count = max(16, int(np.ceil(arc_length_px)) + 1)
+
+    thetas = np.linspace(theta_start, theta_end, sample_count)
+    xs = float(center_x_px) + radius_px * np.cos(thetas)
+    ys = float(center_y_px) + radius_px * np.sin(thetas)
+    angle_axis_deg = np.rad2deg(thetas - theta_center)
+    return xs, ys, angle_axis_deg
+
+
+def sample_azimuthal_strip(
+    *,
+    image: np.ndarray,
+    center_x_px: float,
+    center_y_px: float,
+    peak_x_px: float,
+    peak_y_px: float,
+    azimuthal_span_deg: float,
+    integration_width_px: float,
+    sampler: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Sample azimuthal intensities on an arc with optional radial integration.
+
+    Integration width is applied radially around the nominal peak radius.
+    """
+    arc = arc_coordinates_centered_on_peak_angle(
+        center_x_px=center_x_px,
+        center_y_px=center_y_px,
+        peak_x_px=peak_x_px,
+        peak_y_px=peak_y_px,
+        azimuthal_span_deg=azimuthal_span_deg,
+    )
+    if arc is None:
+        return None
+
+    xs, ys, angle_axis_deg = arc
+    if integration_width_px <= 0.0:
+        xs_clipped = np.clip(xs, 0.0, float(image.shape[1] - 1))
+        ys_clipped = np.clip(ys, 0.0, float(image.shape[0] - 1))
+        return angle_axis_deg, sampler(image, xs_clipped, ys_clipped)
+
+    # Tangent direction follows increasing theta; radial offsets integrate
+    # perpendicular to that tangent (equivalent to radial broadening).
+    dx = float(peak_x_px) - float(center_x_px)
+    dy = float(peak_y_px) - float(center_y_px)
+    radius_px = float(np.hypot(dx, dy))
+    if radius_px <= 0.0:
+        return None
+
+    radial_ux = (xs - float(center_x_px)) / radius_px
+    radial_uy = (ys - float(center_y_px)) / radius_px
+
+    num_strips = max(3, int(np.ceil(float(integration_width_px))))
+    strip_offsets = np.linspace(
+        -float(integration_width_px) * 0.5,
+        float(integration_width_px) * 0.5,
+        num_strips,
+    )
+
+    accum = np.zeros_like(xs, dtype=float)
+    for offset in strip_offsets:
+        xs_offset = np.clip(xs + offset * radial_ux, 0.0, float(image.shape[1] - 1))
+        ys_offset = np.clip(ys + offset * radial_uy, 0.0, float(image.shape[0] - 1))
+        accum += sampler(image, xs_offset, ys_offset)
+
+    return angle_axis_deg, accum / float(num_strips)

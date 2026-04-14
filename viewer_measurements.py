@@ -28,6 +28,9 @@ from measurement_tools import (
     PointSelectionTool,
 )
 from types_common import LoggerLike
+from viewer_settings import load_peak_profile_settings, save_peak_profile_settings
+
+PEAK_COLLECTION_LINE_PEN = pg.mkPen(0, 120, 255, width=2)
 
 
 class _MeasurementControllerOwner(Protocol):
@@ -112,6 +115,14 @@ class MeasurementController:
         self._peak_tool: PointSelectionTool | None = None
         self._peak_points: list[dict[str, Any]] = []
         self._peak_markers: list[tuple[pg.ScatterPlotItem, pg.TextItem]] = []
+        self._peak_collection_active = False
+        self._peak_collection_center_px: tuple[float, float] | None = None
+        self._peak_collection_center_marker: tuple[pg.ScatterPlotItem, pg.TextItem] | None = None
+        self._peak_collection_links: list[dict[str, Any]] = []
+        self._peak_collection_recomputing = False
+        self._peak_collection_shared: dict[str, float] = {
+            key: float(value) for key, value in load_peak_profile_settings().items()
+        }
 
     def _ensure_peak_tool(self) -> PointSelectionTool | None:
         """Create the point-selection tool on first use."""
@@ -131,6 +142,10 @@ class MeasurementController:
     def start_peak_selection(self) -> None:
         """Enable interactive peak picking by clicking points on the image."""
         viewer = self.viewer
+        self._peak_collection_active = False
+        self._peak_collection_center_px = None
+        self._clear_peak_collection_center_marker()
+        self._peak_collection_links.clear()
         peak_tool = self._ensure_peak_tool()
         if peak_tool is None:
             self.logger.debug("Peak selection requested but plot is unavailable")
@@ -164,6 +179,154 @@ class MeasurementController:
             "Click to add peak markers. Use Measure → Export Peaks CSV when done.",
         )
 
+    def start_peak_profile_collection(self) -> None:
+        """Start center-first peak collection that creates radial/azimuthal profiles."""
+        viewer = self.viewer
+        peak_tool = self._ensure_peak_tool()
+        if peak_tool is None:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Peak Profile Collection",
+                "Peak profile collection is not available for this view.",
+            )
+            return
+
+        self._peak_collection_active = True
+        # Reload persisted defaults when entering this workflow.
+        self._peak_collection_shared = {
+            key: float(value) for key, value in load_peak_profile_settings().items()
+        }
+        self._ensure_peak_collection_center_marker()
+
+        viewer._prepare_for_measurement_input()
+        viewer._line_draw_mode = "peak_profiles"
+        viewer._on_calibration_pixels_selected = None
+
+        if viewer.btn_measure is not None:
+            viewer.btn_measure.blockSignals(True)
+            viewer.btn_measure.setChecked(False)
+            viewer.btn_measure.blockSignals(False)
+            viewer.btn_measure.setStyleSheet("")
+
+        if viewer.line_tool is not None:
+            viewer.line_tool.disable()
+
+        peak_tool.enable()
+        viewer._on_measurement_drawing_state_changed(False)
+        self.logger.debug("Peak profile collection mode enabled")
+
+        QtWidgets.QMessageBox.information(
+            viewer,
+            "Peak Profile Collection",
+            (
+                "Step 1: click the diffraction center if one is not already set.\n"
+                "Step 2: click peaks. Each peak creates radial and azimuthal profiles.\n"
+                "Radial length, azimuthal span, and integration width are shared globally."
+            ),
+        )
+
+        if self._peak_collection_center_px is not None:
+            self.logger.debug(
+                "Peak profile collection resumed: center_px=(%.3f, %.3f) peaks=%s",
+                self._peak_collection_center_px[0],
+                self._peak_collection_center_px[1],
+                len(self._peak_points),
+            )
+        else:
+            self.logger.debug("Peak profile collection awaiting center selection")
+
+    def _clear_peak_collection_center_marker(self) -> None:
+        """Remove center marker from the plot when present."""
+        viewer = self.viewer
+        marker_entry = self._peak_collection_center_marker
+        self._peak_collection_center_marker = None
+        if marker_entry is None:
+            return
+
+        marker, label = marker_entry
+        try:
+            viewer.p1.removeItem(marker)
+        except Exception:
+            pass
+        try:
+            viewer.p1.removeItem(label)
+        except Exception:
+            pass
+
+    def _set_peak_collection_center(self, center_x_px: float, center_y_px: float) -> None:
+        """Store and render diffraction center marker for peak-profile collection."""
+        viewer = self.viewer
+        self._peak_collection_center_px = (float(center_x_px), float(center_y_px))
+        self._clear_peak_collection_center_marker()
+
+        x_view, y_view = self._map_pixel_to_view(float(center_x_px), float(center_y_px))
+        marker = pg.ScatterPlotItem(
+            [x_view],
+            [y_view],
+            symbol="x",
+            size=14,
+            pen=pg.mkPen(255, 50, 50, width=2),
+            brush=pg.mkBrush(255, 50, 50, 80),
+        )
+        viewer.p1.addItem(marker)
+
+        label = MeasurementLabel(
+            "Center",
+            color=pg.mkColor(0, 0, 0),
+            anchor=(0, 0),
+            fill=LABEL_BRUSH_COLOR,
+        )
+        label.setPos(x_view, y_view)
+        viewer.p1.addItem(label)
+
+        self._peak_collection_center_marker = (marker, label)
+
+    def _peak_collection_shared_value(self, key: str, default: float) -> float:
+        """Read a shared peak-collection setting with fallback."""
+        return float(self._peak_collection_shared.get(key, default))
+
+    def _ensure_peak_collection_center_marker(self) -> None:
+        """Ensure the stored diffraction center remains visible in collection mode."""
+        if self._peak_collection_center_px is None:
+            return
+        if self._peak_collection_center_marker is not None:
+            return
+        self._set_peak_collection_center(
+            float(self._peak_collection_center_px[0]),
+            float(self._peak_collection_center_px[1]),
+        )
+
+    def _update_peak_collection_shared_settings(
+        self,
+        *,
+        integration_width_px: float | None = None,
+        radial_length_px: float | None = None,
+        azimuthal_span_deg: float | None = None,
+        trigger_recompute: bool = True,
+    ) -> None:
+        """Update shared settings and optionally refresh all collected profiles."""
+        if integration_width_px is not None:
+            self._peak_collection_shared["integration_width_px"] = max(
+                0.0, float(integration_width_px)
+            )
+        if radial_length_px is not None:
+            self._peak_collection_shared["radial_length_px"] = max(1.0, float(radial_length_px))
+        if azimuthal_span_deg is not None:
+            self._peak_collection_shared["azimuthal_span_deg"] = max(
+                0.1, float(azimuthal_span_deg)
+            )
+
+        save_peak_profile_settings(
+            {
+                "integration_width_px": self._peak_collection_shared_value("integration_width_px", 0.0),
+                "radial_length_px": self._peak_collection_shared_value("radial_length_px", 100.0),
+                "azimuthal_span_deg": self._peak_collection_shared_value("azimuthal_span_deg", 5.0),
+            }
+        )
+
+        if trigger_recompute:
+            self._recompute_peak_collection_profiles()
+
     def exit_measure_mode(self) -> None:
         """Exit measurement mode and restore the line tool state.
 
@@ -189,7 +352,9 @@ class MeasurementController:
             viewer.btn_measure.setChecked(False)
 
         self._disable_peak_selection()
-        if viewer._line_draw_mode == "peaks":
+        if viewer._line_draw_mode in {"peaks", "peak_profiles"}:
+            if viewer._line_draw_mode == "peak_profiles":
+                self._peak_collection_active = False
             viewer._line_draw_mode = "measurement"
 
         if viewer.line_tool is not None:
@@ -653,6 +818,16 @@ class MeasurementController:
             return
 
         click_x_px, click_y_px = self._map_view_point_to_pixel(point)
+
+        if self._peak_collection_active and self._peak_collection_center_px is None:
+            self._set_peak_collection_center(click_x_px, click_y_px)
+            self.logger.debug(
+                "Peak profile collection center set: center_px=(%.3f, %.3f)",
+                click_x_px,
+                click_y_px,
+            )
+            return
+
         peak_x_px, peak_y_px = self._snap_click_to_nearest_peak(
             image, click_x_px, click_y_px
         )
@@ -689,7 +864,7 @@ class MeasurementController:
         viewer.p1.addItem(marker)
 
         label = MeasurementLabel(
-            f"Pk#{peak_index}",
+            f"{peak_index}",
             color=pg.mkColor(0, 0, 0),
             anchor=(0, 0),
             fill=LABEL_BRUSH_COLOR,
@@ -721,8 +896,18 @@ class MeasurementController:
                 "gaussian_fit_window_radius_px": int(
                     fit.get("fit_window_radius_px", 0)
                 ),
+                "radial_profile_id": None,
+                "azimuthal_profile_id": None,
             }
         )
+
+        if self._peak_collection_active and self._peak_collection_center_px is not None:
+            self._peak_collection_center_px = (
+                float(self._peak_collection_center_px[0]),
+                float(self._peak_collection_center_px[1]),
+            )
+            self._add_peak_collection_profiles_for_peak(self._peak_points[-1])
+
         self.logger.debug(
             "Peak selected: index=%s click_px=(%.3f,%.3f) snapped_px=(%.3f,%.3f) fit_success=%s",
             peak_index,
@@ -747,6 +932,9 @@ class MeasurementController:
                 pass
         self._peak_markers.clear()
         self._peak_points.clear()
+        self._peak_collection_links.clear()
+        self._peak_collection_center_px = None
+        self._clear_peak_collection_center_marker()
         self.logger.debug("Cleared selected peaks")
 
     def export_peaks_to_csv(self) -> None:
@@ -823,6 +1011,25 @@ class MeasurementController:
                     "gaussian_sigma_y_cal": f"{sigma_y_cal:.12g}",
                     "gaussian_sigma_x_cal": f"{sigma_x_cal:.12g}",
                     "gaussian_goodness_of_fit": f"{float(peak['gaussian_fit_r2']):.12g}",
+                    "radial_profile_id": (
+                        ""
+                        if peak.get("radial_profile_id") is None
+                        else str(int(peak["radial_profile_id"]))
+                    ),
+                    "azimuthal_profile_id": (
+                        ""
+                        if peak.get("azimuthal_profile_id") is None
+                        else str(int(peak["azimuthal_profile_id"]))
+                    ),
+                    "shared_integration_width_px": (
+                        f"{self._peak_collection_shared_value('integration_width_px', 0.0):.12g}"
+                    ),
+                    "shared_radial_length_px": (
+                        f"{self._peak_collection_shared_value('radial_length_px', 100.0):.12g}"
+                    ),
+                    "shared_azimuthal_span_deg": (
+                        f"{self._peak_collection_shared_value('azimuthal_span_deg', 5.0):.12g}"
+                    ),
                 }
             )
 
@@ -842,6 +1049,11 @@ class MeasurementController:
             "gaussian_sigma_y_cal",
             "gaussian_sigma_x_cal",
             "gaussian_goodness_of_fit",
+            "radial_profile_id",
+            "azimuthal_profile_id",
+            "shared_integration_width_px",
+            "shared_radial_length_px",
+            "shared_azimuthal_span_deg",
         ]
 
         repo_root = Path(__file__).resolve().parent
@@ -1169,15 +1381,10 @@ class MeasurementController:
             )
             return
 
-        profile_window = LineProfileWindow(
-            title,
-            distances,
-            intensities,
-            x_axis_label=x_axis_label,
-            trace_colors=trace_colors if isinstance(trace_colors, dict) else None,
-            on_refresh=lambda pid=entry_id: self.refresh_profile_measurement(pid),
-            parent=viewer,
-        )
+        record["title"] = title
+        record["x_axis_label"] = x_axis_label
+        record["trace_colors"] = trace_colors if isinstance(trace_colors, dict) else None
+        profile_window = self._create_profile_window(entry_id, record)
         profile_window.show()
         profile_window.raise_()
         profile_window.activateWindow()
@@ -1413,6 +1620,527 @@ class MeasurementController:
             measurement_type="distance",
         )
 
+    def _profile_history_text(self, profile_id: int, kind: str, point_count: int, peak_index: int | None = None) -> str:
+        """Build stable history text for profile entries."""
+        if kind == "radial" and peak_index is not None:
+            return f"P#{profile_id} Pk#{peak_index} radial profile ({point_count} pts)"
+        if kind == "azimuthal" and peak_index is not None:
+            return f"P#{profile_id} Pk#{peak_index} azimuthal profile ({point_count} pts)"
+        return f"P#{profile_id} profile ({point_count} pts)"
+
+    def _create_profile_window(self, profile_id: int, record: dict[str, Any]) -> LineProfileWindow:
+        """Create a profile window with callbacks derived from record metadata."""
+        viewer = self.viewer
+        family = str(record.get("profile_family", "manual"))
+
+        on_width_changed = (
+            (lambda width, pid=profile_id: self._update_profile_integration_width(pid, width))
+            if family == "peak_collection"
+            else (lambda width, pid=profile_id: self._update_profile_integration_width(pid, width))
+        )
+
+        on_radial_length_changed = None
+        on_azimuthal_span_changed = None
+        radial_length_px = None
+        azimuthal_span_deg = None
+        if family == "peak_collection":
+            on_radial_length_changed = (
+                lambda value: self._update_peak_collection_shared_settings(
+                    radial_length_px=value,
+                    trigger_recompute=True,
+                )
+            )
+            on_azimuthal_span_changed = (
+                lambda value: self._update_peak_collection_shared_settings(
+                    azimuthal_span_deg=value,
+                    trigger_recompute=True,
+                )
+            )
+            radial_length_px = self._peak_collection_shared_value("radial_length_px", 100.0)
+            azimuthal_span_deg = self._peak_collection_shared_value("azimuthal_span_deg", 5.0)
+
+        profile_window = LineProfileWindow(
+            str(record.get("title", f"Profile Measurement #{profile_id}")),
+            np.asarray(record.get("distances", []), dtype=float),
+            record.get("intensities"),
+            x_axis_label=str(record.get("x_axis_label", "Distance (px)")),
+            trace_colors=record.get("trace_colors") if isinstance(record.get("trace_colors"), dict) else None,
+            on_refresh=lambda pid=profile_id: self.refresh_profile_measurement(pid),
+            on_integration_width_changed=on_width_changed,
+            on_radial_length_changed=on_radial_length_changed,
+            on_azimuthal_span_changed=on_azimuthal_span_changed,
+            integration_width_px=float(record.get("integration_width_px", 0.0)),
+            radial_length_px=radial_length_px,
+            azimuthal_span_deg=azimuthal_span_deg,
+            parent=viewer,
+        )
+        return profile_window
+
+    def _sync_peak_collection_window_controls(self) -> None:
+        """Propagate shared controls to all open peak-collection windows."""
+        for record in self.viewer.profile_measurement_items.values():
+            if str(record.get("profile_family", "")) != "peak_collection":
+                continue
+            window = record.get("window")
+            if isinstance(window, LineProfileWindow):
+                try:
+                    window.set_shared_parameters(
+                        integration_width_px=self._peak_collection_shared_value("integration_width_px", 0.0),
+                        radial_length_px=self._peak_collection_shared_value("radial_length_px", 100.0),
+                        azimuthal_span_deg=self._peak_collection_shared_value("azimuthal_span_deg", 5.0),
+                    )
+                except RuntimeError:
+                    record["window"] = None
+
+    def _register_profile_measurement(
+        self,
+        *,
+        distances: np.ndarray,
+        intensities: np.ndarray | Dict[str, np.ndarray],
+        x_axis_label: str,
+        trace_colors: Dict[str, Any] | None,
+        line_item: pg.PlotDataItem,
+        p1: Tuple[float, float],
+        p2: Tuple[float, float],
+        integration_width_px: float,
+        profile_kind: str = "line",
+        profile_family: str = "manual",
+        peak_index: int | None = None,
+    ) -> int:
+        """Store profile measurement, create label/window, and add history entry."""
+        viewer = self.viewer
+        viewer.profile_measurement_count += 1
+        profile_id = viewer.profile_measurement_count
+
+        mid_x = (float(p1[0]) + float(p2[0])) * 0.5
+        mid_y = (float(p1[1]) + float(p2[1])) * 0.5
+
+        if profile_kind == "radial" and peak_index is not None:
+            annotation = f"P#{profile_id} Pk#{peak_index} radial"
+            title = f"Peak #{peak_index} Radial Profile (P#{profile_id})"
+        elif profile_kind == "azimuthal" and peak_index is not None:
+            annotation = f"P#{profile_id} Pk#{peak_index} azimuthal"
+            title = f"Peak #{peak_index} Azimuthal Profile (P#{profile_id})"
+        else:
+            annotation = f"P#{profile_id} profile"
+            title = f"Profile Measurement #{profile_id}"
+
+        text_item = MeasurementLabel(
+            annotation,
+            color=pg.mkColor(0, 0, 0),
+            anchor=(0, 0),
+            fill=LABEL_BRUSH_COLOR,
+        )
+        text_item.setPos(mid_x, mid_y)
+        viewer.p1.addItem(text_item)
+
+        history_text = self._profile_history_text(
+            profile_id,
+            profile_kind,
+            len(distances),
+            peak_index=peak_index,
+        )
+        record: dict[str, Any] = {
+            "line_item": line_item,
+            "text_item": text_item,
+            "window": None,
+            "distances": distances,
+            "intensities": intensities,
+            "trace_colors": trace_colors,
+            "title": title,
+            "history_text": history_text,
+            "x_axis_label": x_axis_label,
+            "p1": (float(p1[0]), float(p1[1])),
+            "p2": (float(p2[0]), float(p2[1])),
+            "integration_width_px": float(integration_width_px),
+            "profile_kind": profile_kind,
+            "profile_family": profile_family,
+            "peak_index": peak_index,
+        }
+
+        viewer.profile_measurement_items[profile_id] = record
+        profile_window = self._create_profile_window(profile_id, record)
+        profile_window.show()
+        profile_window.raise_()
+        profile_window.activateWindow()
+        record["window"] = profile_window
+
+        self.add_to_measurement_history_entry(
+            history_text,
+            measurement_id=profile_id,
+            measurement_type="profile",
+            measurement_parent=self,
+        )
+        return profile_id
+
+    def _extract_azimuthal_profile_for_peak(
+        self,
+        *,
+        center_px: Tuple[float, float],
+        peak_px: Tuple[float, float],
+        azimuthal_span_deg: float,
+        integration_width_px: float,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        pg.PlotDataItem,
+        str,
+        tuple[float, float],
+        tuple[float, float],
+    ] | None:
+        """Extract azimuthal profile for a peak and return display geometry."""
+        image = self._image_array()
+        if image is None:
+            return None
+
+        sampled = line_profile_logic.sample_azimuthal_strip(
+            image=image,
+            center_x_px=float(center_px[0]),
+            center_y_px=float(center_px[1]),
+            peak_x_px=float(peak_px[0]),
+            peak_y_px=float(peak_px[1]),
+            azimuthal_span_deg=float(azimuthal_span_deg),
+            integration_width_px=float(integration_width_px),
+            sampler=self._sample_image_bilinear,
+        )
+        if sampled is None:
+            return None
+
+        _angles_deg, intensities = sampled
+        arc = line_profile_logic.arc_coordinates_centered_on_peak_angle(
+            center_x_px=float(center_px[0]),
+            center_y_px=float(center_px[1]),
+            peak_x_px=float(peak_px[0]),
+            peak_y_px=float(peak_px[1]),
+            azimuthal_span_deg=float(azimuthal_span_deg),
+        )
+        if arc is None:
+            return None
+
+        xs_arc, ys_arc, _angles = arc
+        x_view_points: list[float] = []
+        y_view_points: list[float] = []
+        for x_px, y_px in zip(xs_arc, ys_arc):
+            xv, yv = self._map_pixel_to_view(float(x_px), float(y_px))
+            x_view_points.append(xv)
+            y_view_points.append(yv)
+
+        line_item = pg.PlotDataItem(x_view_points, y_view_points, pen=PEAK_COLLECTION_LINE_PEN)
+        self.viewer.p1.addItem(line_item)
+        p1_view = (x_view_points[0], y_view_points[0])
+        p2_view = (x_view_points[-1], y_view_points[-1])
+
+        axis_unit = line_profile_logic.resolve_profile_axis_unit(
+            view_mode=self.viewer.view_mode,
+            axis_units=getattr(getattr(viewer, "ax_x", None), "units", None),
+            freq_axis_base_unit=getattr(viewer, "freq_axis_base_unit", None),
+        )
+        distances_world = line_profile_logic.cumulative_path_length_axis(
+            xs=np.asarray(x_view_points, dtype=float),
+            ys=np.asarray(y_view_points, dtype=float),
+            rect_mapping=None,
+            axis_calibration=None,
+        )
+        if axis_unit:
+            distances, x_axis_label, _display_unit, _reference_distance, _scaled_ref = (
+                line_profile_logic.scaled_distance_axis(
+                    distances_world=distances_world,
+                    axis_unit=axis_unit,
+                    view_mode=viewer.view_mode,
+                    is_reciprocal_space=viewer.is_reciprocal_space,
+                    format_reciprocal_scale=utils.format_reciprocal_scale,
+                    format_si_scale=utils.format_si_scale,
+                )
+            )
+            x_axis_label = x_axis_label.replace("Distance", "Arc Length")
+        else:
+            distances = distances_world
+            x_axis_label = "Arc Length (px)"
+
+        return distances, intensities, line_item, x_axis_label, p1_view, p2_view
+
+    def _add_peak_collection_profiles_for_peak(self, peak_record: dict[str, Any]) -> None:
+        """Create radial and azimuthal profiles for the newest selected peak."""
+        center_px = self._peak_collection_center_px
+        if center_px is None:
+            return
+
+        peak_px = (float(peak_record["x_px"]), float(peak_record["y_px"]))
+        radial_length_px = self._peak_collection_shared_value("radial_length_px", 100.0)
+        azimuthal_span_deg = self._peak_collection_shared_value("azimuthal_span_deg", 5.0)
+        integration_width_px = self._peak_collection_shared_value("integration_width_px", 0.0)
+
+        radial_endpoints_px = line_profile_logic.radial_line_endpoints_through_peak(
+            center_x_px=float(center_px[0]),
+            center_y_px=float(center_px[1]),
+            peak_x_px=peak_px[0],
+            peak_y_px=peak_px[1],
+            radial_length_px=radial_length_px,
+        )
+        if radial_endpoints_px is None:
+            return
+
+        x0_px, y0_px, x1_px, y1_px = radial_endpoints_px
+        p1_view = self._map_pixel_to_view(x0_px, y0_px)
+        p2_view = self._map_pixel_to_view(x1_px, y1_px)
+        radial_profile = self._extract_line_profile(
+            p1_view,
+            p2_view,
+            create_line_item=True,
+            integration_width_px=integration_width_px,
+        )
+        if radial_profile is None:
+            return
+
+        radial_distances, radial_intensities, radial_line_item, radial_axis_label, radial_colors = radial_profile
+        if radial_line_item is None:
+            return
+
+        radial_line_item.setPen(PEAK_COLLECTION_LINE_PEN)
+
+        peak_index = int(peak_record.get("index", 0))
+        radial_profile_id = self._register_profile_measurement(
+            distances=radial_distances,
+            intensities=radial_intensities,
+            x_axis_label=radial_axis_label,
+            trace_colors=radial_colors,
+            line_item=radial_line_item,
+            p1=p1_view,
+            p2=p2_view,
+            integration_width_px=integration_width_px,
+            profile_kind="radial",
+            profile_family="peak_collection",
+            peak_index=peak_index,
+        )
+        radial_record = self.viewer.profile_measurement_items.get(radial_profile_id)
+        if isinstance(radial_record, dict):
+            radial_line = radial_record.get("line_item")
+            if isinstance(radial_line, pg.PlotDataItem):
+                radial_line.setPen(PEAK_COLLECTION_LINE_PEN)
+
+        azimuthal_profile = self._extract_azimuthal_profile_for_peak(
+            center_px=center_px,
+            peak_px=peak_px,
+            azimuthal_span_deg=azimuthal_span_deg,
+            integration_width_px=integration_width_px,
+        )
+        if azimuthal_profile is None:
+            return
+
+        azimuthal_distances, azimuthal_intensities, azimuthal_line_item, az_axis_label, az_p1_view, az_p2_view = azimuthal_profile
+        azimuthal_profile_id = self._register_profile_measurement(
+            distances=azimuthal_distances,
+            intensities=azimuthal_intensities,
+            x_axis_label=az_axis_label,
+            trace_colors=None,
+            line_item=azimuthal_line_item,
+            p1=az_p1_view,
+            p2=az_p2_view,
+            integration_width_px=integration_width_px,
+            profile_kind="azimuthal",
+            profile_family="peak_collection",
+            peak_index=peak_index,
+        )
+
+        peak_record["radial_profile_id"] = radial_profile_id
+        peak_record["azimuthal_profile_id"] = azimuthal_profile_id
+        self._peak_collection_links.append(
+            {
+                "peak_index": peak_index,
+                "peak_x_px": peak_px[0],
+                "peak_y_px": peak_px[1],
+                "radial_profile_id": radial_profile_id,
+                "azimuthal_profile_id": azimuthal_profile_id,
+            }
+        )
+        self._sync_peak_collection_window_controls()
+
+    def generate_peak_profiles_for_existing_peaks(self) -> None:
+        """Generate profiles for peaks already picked in peak selection mode."""
+        viewer = self.viewer
+        if not self._peak_points:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Peak Profiles",
+                "No peaks are available to generate profiles from.",
+            )
+            return
+
+        if self._peak_collection_center_px is None:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Peak Profiles",
+                "Set a diffraction center first using Peak Profile Collection.",
+            )
+            return
+
+        self._peak_collection_active = True
+
+        generated = 0
+        for peak_record in self._peak_points:
+            if peak_record.get("radial_profile_id") is not None or peak_record.get("azimuthal_profile_id") is not None:
+                continue
+            self._add_peak_collection_profiles_for_peak(peak_record)
+            generated += 1
+
+        self.logger.debug(
+            "Generated peak profiles for existing peaks: generated=%s total_peaks=%s",
+            generated,
+            len(self._peak_points),
+        )
+        QtWidgets.QMessageBox.information(
+            viewer,
+            "Peak Profiles",
+            f"Generated profile pairs for {generated} existing peak(s).",
+        )
+
+    def _recompute_peak_collection_profiles(self) -> None:
+        """Recompute all generated peak-collection profiles with shared settings."""
+        if self._peak_collection_recomputing:
+            return
+
+        viewer = self.viewer
+        center_px = self._peak_collection_center_px
+        if center_px is None:
+            return
+
+        self._peak_collection_recomputing = True
+        try:
+            radial_length_px = self._peak_collection_shared_value("radial_length_px", 100.0)
+            azimuthal_span_deg = self._peak_collection_shared_value("azimuthal_span_deg", 5.0)
+            integration_width_px = self._peak_collection_shared_value("integration_width_px", 0.0)
+
+            for link in self._peak_collection_links:
+                peak_x_px = float(link.get("peak_x_px", 0.0))
+                peak_y_px = float(link.get("peak_y_px", 0.0))
+                peak_index = int(link.get("peak_index", 0))
+
+                radial_profile_id = int(link.get("radial_profile_id", -1))
+                radial_record = viewer.profile_measurement_items.get(radial_profile_id)
+                if isinstance(radial_record, dict):
+                    endpoints = line_profile_logic.radial_line_endpoints_through_peak(
+                        center_x_px=float(center_px[0]),
+                        center_y_px=float(center_px[1]),
+                        peak_x_px=peak_x_px,
+                        peak_y_px=peak_y_px,
+                        radial_length_px=radial_length_px,
+                    )
+                    if endpoints is not None:
+                        x0_px, y0_px, x1_px, y1_px = endpoints
+                        p1_view = self._map_pixel_to_view(x0_px, y0_px)
+                        p2_view = self._map_pixel_to_view(x1_px, y1_px)
+                        refreshed = self._extract_line_profile(
+                            p1_view,
+                            p2_view,
+                            create_line_item=False,
+                            integration_width_px=integration_width_px,
+                        )
+                        if refreshed is not None:
+                            distances, intensities, _line_item, x_axis_label, trace_colors = refreshed
+                            radial_record["distances"] = distances
+                            radial_record["intensities"] = intensities
+                            radial_record["x_axis_label"] = x_axis_label
+                            radial_record["trace_colors"] = trace_colors
+                            radial_record["integration_width_px"] = integration_width_px
+                            radial_record["p1"] = p1_view
+                            radial_record["p2"] = p2_view
+                            radial_record["history_text"] = self._profile_history_text(
+                                radial_profile_id,
+                                "radial",
+                                len(distances),
+                                peak_index=peak_index,
+                            )
+                            line_item = radial_record.get("line_item")
+                            if isinstance(line_item, pg.PlotDataItem):
+                                line_item.setData([p1_view[0], p2_view[0]], [p1_view[1], p2_view[1]])
+                            window = radial_record.get("window")
+                            if isinstance(window, LineProfileWindow):
+                                try:
+                                    window.update_profile_data(
+                                        distances=distances,
+                                        intensities=intensities,
+                                        x_axis_label=x_axis_label,
+                                        trace_colors=trace_colors,
+                                    )
+                                except RuntimeError:
+                                    radial_record["window"] = None
+
+                azimuthal_profile_id = int(link.get("azimuthal_profile_id", -1))
+                az_record = viewer.profile_measurement_items.get(azimuthal_profile_id)
+                if isinstance(az_record, dict):
+                    azimuthal_profile = self._extract_azimuthal_profile_for_peak(
+                        center_px=center_px,
+                        peak_px=(peak_x_px, peak_y_px),
+                        azimuthal_span_deg=azimuthal_span_deg,
+                        integration_width_px=integration_width_px,
+                    )
+                    if azimuthal_profile is not None:
+                        distances, intensities, line_item_new, x_axis_label, p1_view, p2_view = azimuthal_profile
+                        existing_line_item = az_record.get("line_item")
+                        if isinstance(existing_line_item, pg.PlotDataItem):
+                            x_data, y_data = line_item_new.getData()
+                            existing_line_item.setData(x_data, y_data)
+                            self.viewer.p1.removeItem(line_item_new)
+                            existing_line_item.setPen(PEAK_COLLECTION_LINE_PEN)
+                        else:
+                            az_record["line_item"] = line_item_new
+                            line_item_new.setPen(PEAK_COLLECTION_LINE_PEN)
+
+                        az_record["distances"] = distances
+                        az_record["intensities"] = intensities
+                        az_record["x_axis_label"] = x_axis_label
+                        az_record["trace_colors"] = None
+                        az_record["integration_width_px"] = integration_width_px
+                        az_record["p1"] = p1_view
+                        az_record["p2"] = p2_view
+                        az_record["history_text"] = self._profile_history_text(
+                            azimuthal_profile_id,
+                            "azimuthal",
+                            len(distances),
+                            peak_index=peak_index,
+                        )
+                        window = az_record.get("window")
+                        if isinstance(window, LineProfileWindow):
+                            try:
+                                window.update_profile_data(
+                                    distances=distances,
+                                    intensities=intensities,
+                                    x_axis_label=x_axis_label,
+                                    trace_colors=None,
+                                )
+                            except RuntimeError:
+                                az_record["window"] = None
+
+            self._sync_peak_collection_window_controls()
+
+            if viewer.measurement_history_window is not None:
+                try:
+                    for row in range(viewer.measurement_history_window.list_widget.count()):
+                        item = viewer.measurement_history_window.list_widget.item(row)
+                        if item is None:
+                            continue
+                        metadata = item.data(QtCore.Qt.UserRole)
+                        if not isinstance(metadata, dict):
+                            continue
+                        if str(metadata.get("type")) != "profile":
+                            continue
+                        profile_id = metadata.get("id")
+                        if not isinstance(profile_id, int):
+                            continue
+                        record = viewer.profile_measurement_items.get(profile_id)
+                        if not isinstance(record, dict):
+                            continue
+                        text = str(record.get("history_text", item.text()))
+                        metadata["text"] = text
+                        item.setText(text)
+                        item.setData(QtCore.Qt.UserRole, metadata)
+                        if 0 <= row < len(viewer.measurement_history_window.measurements):
+                            viewer.measurement_history_window.measurements[row] = metadata
+                except Exception:
+                    pass
+        finally:
+            self._peak_collection_recomputing = False
+
     def _add_profile_measurement(
         self, p1: Tuple[float, float], p2: Tuple[float, float]
     ) -> None:
@@ -1438,67 +2166,28 @@ class MeasurementController:
             return
 
         distances, intensities, line_item, x_axis_label, trace_colors = profile
-        viewer.profile_measurement_count += 1
-        profile_id = viewer.profile_measurement_count
-        line_label = f"P#{profile_id} profile ({len(distances)} pts)"
-        profile_annotation = f"P#{profile_id} profile"
+        if line_item is None:
+            return
 
-        mid_x = (p1[0] + p2[0]) / 2.0
-        mid_y = (p1[1] + p2[1]) / 2.0
-        text_item = MeasurementLabel(
-            profile_annotation,
-            color=pg.mkColor(0, 0, 0),
-            anchor=(0, 0),
-            fill=LABEL_BRUSH_COLOR,
-        )
-        text_item.setPos(mid_x, mid_y)
-        viewer.p1.addItem(text_item)
-
-        def on_width_changed(width: float) -> None:
-            """Update profile when integration width changes."""
-            self._update_profile_integration_width(profile_id, width)
-
-        profile_window = LineProfileWindow(
-            f"Profile Measurement #{profile_id}",
-            distances,
-            intensities,
+        profile_id = self._register_profile_measurement(
+            distances=distances,
+            intensities=intensities,
             x_axis_label=x_axis_label,
             trace_colors=trace_colors,
-            on_refresh=lambda pid=profile_id: self.refresh_profile_measurement(pid),
-            on_integration_width_changed=on_width_changed,
+            line_item=line_item,
+            p1=p1,
+            p2=p2,
             integration_width_px=initial_width,
-            parent=viewer,
-        )
-        profile_window.show()
-        profile_window.raise_()
-        profile_window.activateWindow()
-
-        viewer.profile_measurement_items[profile_id] = {
-            "line_item": line_item,
-            "text_item": text_item,
-            "window": profile_window,
-            "distances": distances,
-            "intensities": intensities,
-            "trace_colors": trace_colors,
-            "title": f"Profile Measurement #{profile_id}",
-            "history_text": line_label,
-            "x_axis_label": x_axis_label,
-            "p1": (float(p1[0]), float(p1[1])),
-            "p2": (float(p2[0]), float(p2[1])),
-            "integration_width_px": initial_width,
-        }
-        self.add_to_measurement_history_entry(
-            line_label,
-            measurement_id=profile_id,
-            measurement_type="profile",
-            measurement_parent=self,
+            profile_kind="line",
+            profile_family="manual",
+            peak_index=None,
         )
         self.logger.debug(
             "Profile measurement added: id=%s samples=%s midpoint=(%.6g, %.6g)",
             profile_id,
             len(distances),
-            mid_x,
-            mid_y,
+            (p1[0] + p2[0]) * 0.5,
+            (p1[1] + p2[1]) * 0.5,
         )
 
     def _extract_line_profile(
@@ -1763,6 +2452,10 @@ class MeasurementController:
             self.logger.debug("Profile refresh ignored: id=%s not found", profile_id)
             return
 
+        if str(record.get("profile_family", "")) == "peak_collection":
+            self._recompute_peak_collection_profiles()
+            return
+
         p1 = record.get("p1")
         p2 = record.get("p2")
         if not (
@@ -1796,7 +2489,12 @@ class MeasurementController:
         record["x_axis_label"] = x_axis_label
         record["trace_colors"] = trace_colors
 
-        history_text = f"P#{profile_id} profile ({len(distances)} pts)"
+        history_text = self._profile_history_text(
+            profile_id,
+            str(record.get("profile_kind", "line")),
+            len(distances),
+            peak_index=record.get("peak_index"),
+        )
         record["history_text"] = history_text
 
         window = record.get("window")
@@ -1849,6 +2547,13 @@ class MeasurementController:
         record = viewer.profile_measurement_items.get(profile_id)
         if record is None:
             self.logger.debug("Integration width update ignored: id=%s not found", profile_id)
+            return
+
+        if str(record.get("profile_family", "")) == "peak_collection":
+            self._update_peak_collection_shared_settings(
+                integration_width_px=float(width),
+                trigger_recompute=True,
+            )
             return
 
         record["integration_width_px"] = width
@@ -1919,5 +2624,25 @@ class MeasurementController:
                 profile_window.close()
             except RuntimeError:
                 pass
+
+        if self._peak_collection_links:
+            retained_links: list[dict[str, Any]] = []
+            for link in self._peak_collection_links:
+                radial_id = link.get("radial_profile_id")
+                azimuthal_id = link.get("azimuthal_profile_id")
+                if isinstance(radial_id, int) and radial_id == profile_id:
+                    link["radial_profile_id"] = None
+                if isinstance(azimuthal_id, int) and azimuthal_id == profile_id:
+                    link["azimuthal_profile_id"] = None
+                if link.get("radial_profile_id") is None and link.get("azimuthal_profile_id") is None:
+                    continue
+                retained_links.append(link)
+            self._peak_collection_links = retained_links
+
+            for peak in self._peak_points:
+                if int(peak.get("radial_profile_id") or -1) == profile_id:
+                    peak["radial_profile_id"] = None
+                if int(peak.get("azimuthal_profile_id") or -1) == profile_id:
+                    peak["azimuthal_profile_id"] = None
         self.logger.debug("Profile measurement deleted: id=%s", profile_id)
         return True

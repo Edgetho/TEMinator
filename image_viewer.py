@@ -2124,6 +2124,8 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "Intensity": lambda: self._show_not_implemented("Intensity"),
             "Profile": self._menu_start_profile_measurement,
             "Select Peaks": self._menu_start_peak_selection,
+            "Peak Profiles": self._menu_start_peak_profile_collection,
+            "Generate Peak Profiles": self._menu_generate_peak_profiles,
             "Export Peaks CSV": self._menu_export_peaks_csv,
             "Metadata": self._show_metadata_window,
             "Render Diagnostics": self._show_render_diagnostics,
@@ -2329,6 +2331,16 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         """Handle menu action that starts peak selection mode."""
         logger.debug("Menu action: start peak selection")
         self.measurements.start_peak_selection()
+
+    def _menu_start_peak_profile_collection(self) -> None:
+        """Handle menu action that starts center-first peak profile collection."""
+        logger.debug("Menu action: start peak profile collection")
+        self.measurements.start_peak_profile_collection()
+
+    def _menu_generate_peak_profiles(self) -> None:
+        """Generate peak profiles for peaks already picked in peak selection mode."""
+        logger.debug("Menu action: generate peak profiles from existing peaks")
+        self.measurements.generate_peak_profiles_for_existing_peaks()
 
     def _menu_export_peaks_csv(self) -> None:
         """Handle menu action that exports selected peaks to CSV."""

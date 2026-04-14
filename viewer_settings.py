@@ -16,6 +16,12 @@ class RenderSettings(TypedDict):
     image_resampling_quality: str
 
 
+class PeakProfileSettings(TypedDict):
+    integration_width_px: float
+    radial_length_px: float
+    azimuthal_span_deg: float
+
+
 DEFAULT_RENDER_SETTINGS: RenderSettings = {
     "use_hardware_acceleration": True,
     "image_resampling_quality": "high",
@@ -27,6 +33,12 @@ RESAMPLING_HIGH = "high"
 RESAMPLING_CHOICES = {RESAMPLING_FAST, RESAMPLING_BALANCED, RESAMPLING_HIGH}
 _HW_AVAILABLE_CACHE: bool | None = None
 _EFFECTIVE_RENDER_SETTINGS: RenderSettings | None = None
+
+DEFAULT_PEAK_PROFILE_SETTINGS: PeakProfileSettings = {
+    "integration_width_px": 0.0,
+    "radial_length_px": 100.0,
+    "azimuthal_span_deg": 5.0,
+}
 
 
 def _settings_store() -> QtCore.QSettings:
@@ -190,3 +202,46 @@ def get_effective_render_settings() -> RenderSettings:
     if _EFFECTIVE_RENDER_SETTINGS is not None:
         return _EFFECTIVE_RENDER_SETTINGS
     return load_render_settings()
+
+
+def load_peak_profile_settings() -> PeakProfileSettings:
+    """Load persisted defaults for peak-profile collection parameters."""
+    store = _settings_store()
+
+    integration_width_px = float(
+        store.value(
+            "peak_profiles/integration_width_px",
+            DEFAULT_PEAK_PROFILE_SETTINGS["integration_width_px"],
+        )
+    )
+    radial_length_px = float(
+        store.value(
+            "peak_profiles/radial_length_px",
+            DEFAULT_PEAK_PROFILE_SETTINGS["radial_length_px"],
+        )
+    )
+    azimuthal_span_deg = float(
+        store.value(
+            "peak_profiles/azimuthal_span_deg",
+            DEFAULT_PEAK_PROFILE_SETTINGS["azimuthal_span_deg"],
+        )
+    )
+
+    return {
+        "integration_width_px": max(0.0, integration_width_px),
+        "radial_length_px": max(1.0, radial_length_px),
+        "azimuthal_span_deg": max(0.1, azimuthal_span_deg),
+    }
+
+
+def save_peak_profile_settings(settings: PeakProfileSettings) -> None:
+    """Persist peak-profile collection defaults to QSettings."""
+    integration_width_px = max(0.0, float(settings.get("integration_width_px", 0.0)))
+    radial_length_px = max(1.0, float(settings.get("radial_length_px", 100.0)))
+    azimuthal_span_deg = max(0.1, float(settings.get("azimuthal_span_deg", 5.0)))
+
+    store = _settings_store()
+    store.setValue("peak_profiles/integration_width_px", integration_width_px)
+    store.setValue("peak_profiles/radial_length_px", radial_length_px)
+    store.setValue("peak_profiles/azimuthal_span_deg", azimuthal_span_deg)
+    store.sync()

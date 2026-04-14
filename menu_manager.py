@@ -315,6 +315,22 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             menu_path="Measure",
         ),
         MenuItemConfig(
+            title="Peak Profiles",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            menu_path="Measure",
+        ),
+        MenuItemConfig(
+            title="Generate Peak Profiles",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            menu_path="Measure",
+        ),
+        MenuItemConfig(
             title="Export Peaks CSV",
             shortcut="",
             callback=lambda: None,
