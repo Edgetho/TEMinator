@@ -564,3 +564,81 @@ def sample_azimuthal_strip(
         accum += sampler(image, xs_offset, ys_offset)
 
     return angle_axis_deg, accum / float(num_strips)
+
+
+def circle_coordinates_from_center(
+    *,
+    center_x_px: float,
+    center_y_px: float,
+    radius_px: float,
+    angle_step_deg: float = 0.1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Return coordinates for a full circle sampled at fixed angular spacing.
+
+    The angle axis is in degrees from 0 to 360 inclusive.
+    """
+    radius = float(radius_px)
+    if radius <= 0.0 or not np.isfinite(radius):
+        return None
+
+    step = max(0.01, float(angle_step_deg))
+    sample_count = max(32, int(np.ceil(360.0 / step)) + 1)
+    angle_axis_deg = np.linspace(0.0, 360.0, sample_count)
+    theta = np.deg2rad(angle_axis_deg)
+
+    xs = float(center_x_px) + radius * np.cos(theta)
+    ys = float(center_y_px) + radius * np.sin(theta)
+    return xs, ys, angle_axis_deg
+
+
+def sample_azimuthal_circle(
+    *,
+    image: np.ndarray,
+    center_x_px: float,
+    center_y_px: float,
+    radius_px: float,
+    integration_width_px: float,
+    sampler: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
+    angle_step_deg: float = 0.1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Sample azimuthal intensities around a full circle.
+
+    Integration width is applied radially about the nominal radius.
+    Returns ``(angle_axis_deg, intensities, xs, ys)``.
+    """
+    circle = circle_coordinates_from_center(
+        center_x_px=center_x_px,
+        center_y_px=center_y_px,
+        radius_px=radius_px,
+        angle_step_deg=angle_step_deg,
+    )
+    if circle is None:
+        return None
+
+    xs, ys, angle_axis_deg = circle
+    if integration_width_px <= 0.0:
+        xs_clipped = np.clip(xs, 0.0, float(image.shape[1] - 1))
+        ys_clipped = np.clip(ys, 0.0, float(image.shape[0] - 1))
+        intensities = sampler(image, xs_clipped, ys_clipped)
+        return angle_axis_deg, intensities, xs, ys
+
+    radius = float(radius_px)
+    if radius <= 0.0:
+        return None
+
+    radial_ux = (xs - float(center_x_px)) / radius
+    radial_uy = (ys - float(center_y_px)) / radius
+    num_strips = max(3, int(np.ceil(float(integration_width_px))))
+    strip_offsets = np.linspace(
+        -float(integration_width_px) * 0.5,
+        float(integration_width_px) * 0.5,
+        num_strips,
+    )
+
+    accum = np.zeros_like(xs, dtype=float)
+    for offset in strip_offsets:
+        xs_offset = np.clip(xs + offset * radial_ux, 0.0, float(image.shape[1] - 1))
+        ys_offset = np.clip(ys + offset * radial_uy, 0.0, float(image.shape[0] - 1))
+        accum += sampler(image, xs_offset, ys_offset)
+
+    return angle_axis_deg, accum / float(num_strips), xs, ys

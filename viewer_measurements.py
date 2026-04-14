@@ -123,6 +123,10 @@ class MeasurementController:
         self._peak_collection_shared: dict[str, float] = {
             key: float(value) for key, value in load_peak_profile_settings().items()
         }
+        self._azimuthal_profile_active = False
+        self._azimuthal_profile_circle_points_px: list[tuple[float, float]] = []
+        self._azimuthal_profile_pick_markers: list[tuple[pg.ScatterPlotItem, MeasurementLabel]] = []
+        self._azimuthal_profile_angle_step_deg = 0.5
 
     def _ensure_peak_tool(self) -> PointSelectionTool | None:
         """Create the point-selection tool on first use."""
@@ -142,6 +146,7 @@ class MeasurementController:
     def start_peak_selection(self) -> None:
         """Enable interactive peak picking by clicking points on the image."""
         viewer = self.viewer
+        self._reset_standalone_azimuthal_mode()
         self._peak_collection_active = False
         self._peak_collection_center_px = None
         self._clear_peak_collection_center_marker()
@@ -172,6 +177,7 @@ class MeasurementController:
         peak_tool.enable()
         viewer._on_measurement_drawing_state_changed(False)
         self.logger.debug("Peak selection mode enabled")
+        self.logger.debug("Entered peak picking mode")
 
         QtWidgets.QMessageBox.information(
             viewer,
@@ -182,6 +188,7 @@ class MeasurementController:
     def start_peak_profile_collection(self) -> None:
         """Start center-first peak collection that creates radial/azimuthal profiles."""
         viewer = self.viewer
+        self._reset_standalone_azimuthal_mode()
         peak_tool = self._ensure_peak_tool()
         if peak_tool is None:
             QtWidgets.QMessageBox.information(
@@ -252,6 +259,133 @@ class MeasurementController:
             viewer.p1.removeItem(label)
         except Exception:
             pass
+
+    def _clear_temporary_azimuthal_pick_markers(self) -> None:
+        """Remove temporary standalone azimuthal point markers from the plot."""
+        viewer = self.viewer
+        for marker, label in self._azimuthal_profile_pick_markers:
+            try:
+                viewer.p1.removeItem(marker)
+            except Exception:
+                pass
+            try:
+                viewer.p1.removeItem(label)
+            except Exception:
+                pass
+        self._azimuthal_profile_pick_markers.clear()
+
+    def _add_temporary_azimuthal_pick_marker(self, x_px: float, y_px: float, label_text: str) -> None:
+        """Render one temporary marker for standalone azimuthal circle picking."""
+        viewer = self.viewer
+        x_view, y_view = self._map_pixel_to_view(float(x_px), float(y_px))
+        marker = pg.ScatterPlotItem(
+            [x_view],
+            [y_view],
+            symbol="o",
+            size=10,
+            pen=pg.mkPen(255, 50, 50, width=2),
+            brush=pg.mkBrush(255, 50, 50, 80),
+        )
+        viewer.p1.addItem(marker)
+
+        label = MeasurementLabel(
+            label_text,
+            color=pg.mkColor(0, 0, 0),
+            anchor=(0, 0),
+            fill=LABEL_BRUSH_COLOR,
+        )
+        label.setPos(x_view, y_view)
+        viewer.p1.addItem(label)
+        self._azimuthal_profile_pick_markers.append((marker, label))
+
+    @staticmethod
+    def _fit_circle_from_three_points(
+        p1: tuple[float, float],
+        p2: tuple[float, float],
+        p3: tuple[float, float],
+    ) -> tuple[float, float, float] | None:
+        """Fit a circle from three points, returning center_x, center_y, radius."""
+        x1, y1 = float(p1[0]), float(p1[1])
+        x2, y2 = float(p2[0]), float(p2[1])
+        x3, y3 = float(p3[0]), float(p3[1])
+
+        det = 2.0 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+        if abs(det) < 1e-9:
+            return None
+
+        x1sq_y1sq = x1 * x1 + y1 * y1
+        x2sq_y2sq = x2 * x2 + y2 * y2
+        x3sq_y3sq = x3 * x3 + y3 * y3
+
+        cx = (
+            x1sq_y1sq * (y2 - y3)
+            + x2sq_y2sq * (y3 - y1)
+            + x3sq_y3sq * (y1 - y2)
+        ) / det
+        cy = (
+            x1sq_y1sq * (x3 - x2)
+            + x2sq_y2sq * (x1 - x3)
+            + x3sq_y3sq * (x2 - x1)
+        ) / det
+        radius = float(np.hypot(x1 - cx, y1 - cy))
+        if not np.isfinite(radius) or radius <= 0.0:
+            return None
+        return float(cx), float(cy), radius
+
+    def _reset_standalone_azimuthal_mode(self) -> None:
+        """Reset transient state used by standalone azimuthal profiling."""
+        self._azimuthal_profile_active = False
+        self._azimuthal_profile_circle_points_px.clear()
+        self._clear_temporary_azimuthal_pick_markers()
+
+    def start_azimuthal_profile_measurement(self) -> None:
+        """Start standalone 3-point-circle azimuthal profile measurement mode."""
+        viewer = self.viewer
+        peak_tool = self._ensure_peak_tool()
+        if peak_tool is None:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Azimuthal Profile",
+                "Azimuthal profile measurement is not available for this view.",
+            )
+            return
+
+        self._reset_standalone_azimuthal_mode()
+        self._azimuthal_profile_active = True
+        self._peak_collection_active = False
+        self._disable_peak_selection()
+
+        viewer._prepare_for_measurement_input()
+        viewer._line_draw_mode = "azimuthal_profile"
+        viewer._on_calibration_pixels_selected = None
+
+        if viewer.btn_measure is not None:
+            viewer.btn_measure.blockSignals(True)
+            viewer.btn_measure.setChecked(False)
+            viewer.btn_measure.blockSignals(False)
+            viewer.btn_measure.setStyleSheet("")
+
+        if viewer.line_tool is not None:
+            viewer.line_tool.disable()
+
+        peak_tool.enable()
+        viewer._on_measurement_drawing_state_changed(False)
+        self.logger.debug("Standalone azimuthal profile mode enabled")
+
+        QtWidgets.QMessageBox.information(
+            viewer,
+            "Azimuthal Profile",
+            (
+                "Step 1: click near peak C1 on the circle.")
+            + "\n"
+            + (
+                "Step 2: click near peak C2 on the circle."
+            )
+            + "\n"
+            + (
+                "Step 3: click near peak C3 on the circle to extract intensity vs angle."
+            ),
+        )
 
     def _set_peak_collection_center(self, center_x_px: float, center_y_px: float) -> None:
         """Store and render diffraction center marker for peak-profile collection."""
@@ -352,9 +486,13 @@ class MeasurementController:
             viewer.btn_measure.setChecked(False)
 
         self._disable_peak_selection()
-        if viewer._line_draw_mode in {"peaks", "peak_profiles"}:
+        if viewer._line_draw_mode in {"peaks", "peak_profiles", "azimuthal_profile"}:
+            if viewer._line_draw_mode == "peaks":
+                self.logger.debug("Exited peak picking mode")
             if viewer._line_draw_mode == "peak_profiles":
                 self._peak_collection_active = False
+            if viewer._line_draw_mode == "azimuthal_profile":
+                self._reset_standalone_azimuthal_mode()
             viewer._line_draw_mode = "measurement"
 
         if viewer.line_tool is not None:
@@ -375,6 +513,7 @@ class MeasurementController:
             self.logger.debug("Ignoring measurement toggle: line tool is unavailable")
             return
 
+        self._reset_standalone_azimuthal_mode()
         self._disable_peak_selection()
 
         if viewer.btn_measure is not None and viewer.btn_measure.isChecked():
@@ -422,6 +561,7 @@ class MeasurementController:
             )
             return
 
+        self._reset_standalone_azimuthal_mode()
         self._disable_peak_selection()
 
         viewer._prepare_for_measurement_input()
@@ -441,6 +581,7 @@ class MeasurementController:
 
         Processes the line based on the current drawing mode:
         - "profile": Adds a line profile measurement.
+        - "azimuthal_profile": Click-driven mode; line events are ignored.
         - "calibration": Converts physical distance to pixel distance via callback.
         - "measurement": Adds a distance or FFT frequency measurement.
 
@@ -454,6 +595,10 @@ class MeasurementController:
         )
         if viewer._line_draw_mode == "profile":
             self._add_profile_measurement(p1, p2)
+            return
+
+        if viewer._line_draw_mode == "azimuthal_profile":
+            self.logger.debug("Ignoring line event in azimuthal_profile mode")
             return
 
         if viewer._line_draw_mode == "calibration":
@@ -818,6 +963,49 @@ class MeasurementController:
             return
 
         click_x_px, click_y_px = self._map_view_point_to_pixel(point)
+
+        if self._azimuthal_profile_active and viewer._line_draw_mode == "azimuthal_profile":
+            self.logger.debug("begin snapping peak selection to nearest local maximum for azimuthal profile point #%d", len(self._azimuthal_profile_circle_points_px) + 1)
+            peak_x_px, peak_y_px = self._snap_click_to_nearest_peak(
+                image,
+                click_x_px,
+                click_y_px,
+            )
+            self.logger.debug("snapped to nearest local maximum at (%.3f, %.3f)", peak_x_px, peak_y_px)
+            # fit = self._fit_gaussian_peak(image, peak_x_px, peak_y_px)
+            # picked_x_px = float(fit.get("center_x_px", peak_x_px))
+            # picked_y_px = float(fit.get("center_y_px", peak_y_px))
+            picked_x_px = float(peak_x_px)
+            picked_y_px = float(peak_y_px)
+
+            self._azimuthal_profile_circle_points_px.append((picked_x_px, picked_y_px))
+            picked_count = len(self._azimuthal_profile_circle_points_px)
+            self._add_temporary_azimuthal_pick_marker(
+                picked_x_px,
+                picked_y_px,
+                f"C{picked_count}",
+            )
+            if picked_count < 3:
+                return
+
+            p1, p2, p3 = self._azimuthal_profile_circle_points_px[0:3]
+            fitted = self._fit_circle_from_three_points(p1, p2, p3)
+            self._azimuthal_profile_circle_points_px.clear()
+            self._clear_temporary_azimuthal_pick_markers()
+            if fitted is None:
+                QtWidgets.QMessageBox.information(
+                    viewer,
+                    "Azimuthal Profile",
+                    "Could not fit a circle from the selected points. Please pick three non-colinear points.",
+                )
+                return
+
+            center_x_px, center_y_px, radius_px = fitted
+            self._add_standalone_azimuthal_profile(
+                center_px=(float(center_x_px), float(center_y_px)),
+                radius_px=float(radius_px),
+            )
+            return
 
         if self._peak_collection_active and self._peak_collection_center_px is None:
             self._set_peak_collection_center(click_x_px, click_y_px)
@@ -1626,6 +1814,8 @@ class MeasurementController:
             return f"P#{profile_id} Pk#{peak_index} radial profile ({point_count} pts)"
         if kind == "azimuthal" and peak_index is not None:
             return f"P#{profile_id} Pk#{peak_index} azimuthal profile ({point_count} pts)"
+        if kind == "azimuthal":
+            return f"P#{profile_id} azimuthal profile ({point_count} pts)"
         return f"P#{profile_id} profile ({point_count} pts)"
 
     def _create_profile_window(self, profile_id: int, record: dict[str, Any]) -> LineProfileWindow:
@@ -1721,6 +1911,9 @@ class MeasurementController:
         elif profile_kind == "azimuthal" and peak_index is not None:
             annotation = f"P#{profile_id} Pk#{peak_index} azimuthal"
             title = f"Peak #{peak_index} Azimuthal Profile (P#{profile_id})"
+        elif profile_kind == "azimuthal":
+            annotation = f"P#{profile_id} azimuthal"
+            title = f"Azimuthal Profile #{profile_id}"
         else:
             annotation = f"P#{profile_id} profile"
             title = f"Profile Measurement #{profile_id}"
@@ -1789,6 +1982,7 @@ class MeasurementController:
         tuple[float, float],
     ] | None:
         """Extract azimuthal profile for a peak and return display geometry."""
+        viewer = self.viewer
         image = self._image_array()
         if image is None:
             return None
@@ -1858,6 +2052,156 @@ class MeasurementController:
             x_axis_label = "Arc Length (px)"
 
         return distances, intensities, line_item, x_axis_label, p1_view, p2_view
+
+    def _extract_standalone_azimuthal_profile(
+        self,
+        *,
+        center_px: Tuple[float, float],
+        radius_px: float,
+        integration_width_px: float,
+        angle_step_deg: float,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        tuple[float, float],
+        tuple[float, float],
+        float,
+    ] | None:
+        """Extract a full-circle azimuthal profile from center and radius."""
+        image = self._image_array()
+        if image is None:
+            return None
+
+        center_x_px = float(center_px[0])
+        center_y_px = float(center_px[1])
+        radius = float(radius_px)
+        if radius <= 0.0 or not np.isfinite(radius):
+            return None
+
+        sampled = line_profile_logic.sample_azimuthal_circle(
+            image=image,
+            center_x_px=center_x_px,
+            center_y_px=center_y_px,
+            radius_px=radius,
+            integration_width_px=float(integration_width_px),
+            sampler=self._sample_image_bilinear,
+            angle_step_deg=float(angle_step_deg),
+        )
+        if sampled is None:
+            return None
+
+        angle_axis_deg, intensities, xs_circle, ys_circle = sampled
+        x_view_points: list[float] = []
+        y_view_points: list[float] = []
+        for x_px, y_px in zip(xs_circle, ys_circle):
+            x_view, y_view = self._map_pixel_to_view(float(x_px), float(y_px))
+            x_view_points.append(x_view)
+            y_view_points.append(y_view)
+
+        xs_view = np.asarray(x_view_points, dtype=float)
+        ys_view = np.asarray(y_view_points, dtype=float)
+        if xs_view.size < 2 or ys_view.size < 2:
+            return None
+
+        midpoint_idx = int(xs_view.size // 2)
+        p1_view = (float(xs_view[0]), float(ys_view[0]))
+        p2_view = (float(xs_view[midpoint_idx]), float(ys_view[midpoint_idx]))
+        return angle_axis_deg, intensities, xs_view, ys_view, p1_view, p2_view, radius
+
+    @staticmethod
+    def _decimate_display_polyline(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        max_points: int = 360,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Downsample display polyline for faster viewer rendering."""
+        if xs.size <= max_points or ys.size <= max_points:
+            return xs, ys
+
+        step = max(1, int(np.ceil(float(xs.size) / float(max_points))))
+        xs_dec = xs[::step]
+        ys_dec = ys[::step]
+        if not (np.isclose(xs_dec[-1], xs[-1]) and np.isclose(ys_dec[-1], ys[-1])):
+            xs_dec = np.append(xs_dec, xs[-1])
+            ys_dec = np.append(ys_dec, ys[-1])
+        return xs_dec, ys_dec
+
+    def _add_standalone_azimuthal_profile(
+        self,
+        *,
+        center_px: Tuple[float, float],
+        radius_px: float,
+    ) -> None:
+        """Create and register one standalone azimuthal profile measurement."""
+        viewer = self.viewer
+        integration_width_px = 0.0
+        extracted = self._extract_standalone_azimuthal_profile(
+            center_px=center_px,
+            radius_px=float(radius_px),
+            integration_width_px=integration_width_px,
+            angle_step_deg=self._azimuthal_profile_angle_step_deg,
+        )
+        if extracted is None:
+            QtWidgets.QMessageBox.information(
+                viewer,
+                "Azimuthal Profile",
+                "Could not extract azimuthal profile for the selected circle.",
+            )
+            return
+
+        (
+            angle_axis_deg,
+            intensities,
+            xs_view,
+            ys_view,
+            p1_view,
+            p2_view,
+            radius_px,
+        ) = extracted
+        xs_view_display, ys_view_display = self._decimate_display_polyline(
+            xs_view,
+            ys_view,
+            max_points=360,
+        )
+        line_item = pg.PlotDataItem(xs_view_display, ys_view_display, pen=DRAWN_LINE_PEN)
+        viewer.p1.addItem(line_item)
+
+        profile_id = self._register_profile_measurement(
+            distances=angle_axis_deg,
+            intensities=intensities,
+            x_axis_label="Angle (deg)",
+            trace_colors=None,
+            line_item=line_item,
+            p1=p1_view,
+            p2=p2_view,
+            integration_width_px=integration_width_px,
+            profile_kind="azimuthal",
+            profile_family="manual",
+            peak_index=None,
+        )
+
+        record = viewer.profile_measurement_items.get(profile_id)
+        if isinstance(record, dict):
+            record["title"] = f"Azimuthal Profile #{profile_id}"
+            record["azimuthal_mode"] = "circle"
+            record["azimuthal_center_px"] = (float(center_px[0]), float(center_px[1]))
+            record["azimuthal_radius_px"] = float(radius_px)
+            record["azimuthal_angle_step_deg"] = float(self._azimuthal_profile_angle_step_deg)
+            record["x_axis_label"] = "Angle (deg)"
+
+            window = record.get("window")
+            if isinstance(window, LineProfileWindow):
+                window.setWindowTitle(str(record["title"]))
+
+        self.logger.debug(
+            "Standalone azimuthal profile added: center_px=(%.3f, %.3f) radius_px=%.3f points=%s",
+            center_px[0],
+            center_px[1],
+            radius_px,
+            len(angle_axis_deg),
+        )
 
     def _add_peak_collection_profiles_for_peak(self, peak_record: dict[str, Any]) -> None:
         """Create radial and azimuthal profiles for the newest selected peak."""
@@ -2454,6 +2798,114 @@ class MeasurementController:
 
         if str(record.get("profile_family", "")) == "peak_collection":
             self._recompute_peak_collection_profiles()
+            return
+
+        if (
+            str(record.get("profile_kind", "")) == "azimuthal"
+            and str(record.get("azimuthal_mode", "")) == "circle"
+        ):
+            center_px = record.get("azimuthal_center_px")
+            radius_px = record.get("azimuthal_radius_px")
+            if not (
+                isinstance(center_px, tuple)
+                and len(center_px) == 2
+                and radius_px is not None
+            ):
+                self.logger.debug(
+                    "Azimuthal refresh ignored: missing center/radius for id=%s",
+                    profile_id,
+                )
+                return
+
+            angle_step_deg = float(
+                record.get("azimuthal_angle_step_deg", self._azimuthal_profile_angle_step_deg)
+            )
+            integration_width = float(record.get("integration_width_px", 0.0))
+            refreshed_az = self._extract_standalone_azimuthal_profile(
+                center_px=(float(center_px[0]), float(center_px[1])),
+                radius_px=float(radius_px),
+                integration_width_px=integration_width,
+                angle_step_deg=angle_step_deg,
+            )
+            if refreshed_az is None:
+                QtWidgets.QMessageBox.information(
+                    viewer,
+                    "Azimuthal Profile",
+                    "Could not refresh azimuthal profile from the current view.",
+                )
+                return
+
+            (
+                distances,
+                intensities,
+                xs_view,
+                ys_view,
+                p1_view,
+                p2_view,
+                _radius_px,
+            ) = refreshed_az
+            record["distances"] = distances
+            record["intensities"] = intensities
+            record["x_axis_label"] = "Angle (deg)"
+            record["trace_colors"] = None
+            record["p1"] = p1_view
+            record["p2"] = p2_view
+
+            line_item = record.get("line_item")
+            if isinstance(line_item, pg.PlotDataItem):
+                xs_view_display, ys_view_display = self._decimate_display_polyline(
+                    xs_view,
+                    ys_view,
+                    max_points=360,
+                )
+                line_item.setData(xs_view_display, ys_view_display)
+
+            history_text = self._profile_history_text(
+                profile_id,
+                str(record.get("profile_kind", "line")),
+                len(distances),
+                peak_index=record.get("peak_index"),
+            )
+            record["history_text"] = history_text
+
+            window = record.get("window")
+            if isinstance(window, LineProfileWindow):
+                try:
+                    window.update_profile_data(
+                        distances=distances,
+                        intensities=intensities,
+                        x_axis_label="Angle (deg)",
+                        trace_colors=None,
+                    )
+                except RuntimeError:
+                    record["window"] = None
+
+            if viewer.measurement_history_window is not None:
+                try:
+                    for row in range(viewer.measurement_history_window.list_widget.count()):
+                        item = viewer.measurement_history_window.list_widget.item(row)
+                        if item is None:
+                            continue
+                        metadata = item.data(QtCore.Qt.UserRole)
+                        if (
+                            isinstance(metadata, dict)
+                            and metadata.get("id") == profile_id
+                            and metadata.get("type") == "profile"
+                        ):
+                            metadata["text"] = history_text
+                            item.setText(history_text)
+                            item.setData(QtCore.Qt.UserRole, metadata)
+                            if 0 <= row < len(viewer.measurement_history_window.measurements):
+                                viewer.measurement_history_window.measurements[row] = metadata
+                            break
+                except Exception:
+                    pass
+
+            self.logger.debug(
+                "Standalone azimuthal profile refreshed: id=%s samples=%s",
+                profile_id,
+                len(distances),
+            )
             return
 
         p1 = record.get("p1")

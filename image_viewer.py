@@ -2123,6 +2123,7 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
             "History": self.measurements.show_measurement_history,
             "Intensity": lambda: self._show_not_implemented("Intensity"),
             "Profile": self._menu_start_profile_measurement,
+            "Azimuthal Profile": self._menu_start_azimuthal_profile_measurement,
             "Select Peaks": self._menu_start_peak_selection,
             "Peak Profiles": self._menu_start_peak_profile_collection,
             "Generate Peak Profiles": self._menu_generate_peak_profiles,
@@ -2302,6 +2303,11 @@ class ImageViewerWindow(QtWidgets.QMainWindow):
         """Handle menu action that starts profile measurement mode."""
         logger.debug("Menu action: start profile measurement")
         self.measurements.start_profile_measurement()
+
+    def _menu_start_azimuthal_profile_measurement(self) -> None:
+        """Handle menu action that starts standalone azimuthal profile mode."""
+        logger.debug("Menu action: start azimuthal profile measurement")
+        self.measurements.start_azimuthal_profile_measurement()
 
     # EDS menu callbacks
     def _edx_toggle_panel(self) -> None:

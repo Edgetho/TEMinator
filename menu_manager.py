@@ -307,6 +307,14 @@ def create_shared_menu_config() -> List[MenuItemConfig]:
             menu_path="Measure",
         ),
         MenuItemConfig(
+            title="Azimuthal Profile",
+            shortcut="",
+            callback=lambda: None,
+            is_implemented=True,
+            requires_image=True,
+            menu_path="Measure",
+        ),
+        MenuItemConfig(
             title="Select Peaks",
             shortcut="k",
             callback=lambda: None,

@@ -517,9 +517,11 @@ class MeasurementHistoryWindow(QtWidgets.QMainWindow):
     def _x_axis_column_name(x_axis_label: str) -> str:
         """Derive concise column header from axis label."""
         unit_match = re.search(r"\(([^)]+)\)", x_axis_label)
+        axis_lower = x_axis_label.strip().lower()
+        axis_prefix = "angle" if axis_lower.startswith("angle") else "distance"
         if unit_match:
-            return f"distance_{unit_match.group(1).strip()}"
-        return "distance"
+            return f"{axis_prefix}_{unit_match.group(1).strip()}"
+        return axis_prefix
 
 
 class LineProfileWindow(QtWidgets.QMainWindow):
@@ -567,6 +569,11 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         self._on_radial_length_changed = on_radial_length_changed
         self._on_azimuthal_span_changed = on_azimuthal_span_changed
         self.integration_width_px = integration_width_px
+        self._pending_integration_width_px = float(integration_width_px)
+        self._width_change_debounce_timer = QtCore.QTimer(self)
+        self._width_change_debounce_timer.setSingleShot(True)
+        self._width_change_debounce_timer.setInterval(250)
+        self._width_change_debounce_timer.timeout.connect(self._emit_debounced_width_change)
         self.radial_length_px = radial_length_px
         self.azimuthal_span_deg = azimuthal_span_deg
 
@@ -578,6 +585,10 @@ class LineProfileWindow(QtWidgets.QMainWindow):
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self.plot_widget.setLabel("left", "Intensity")
+        plot_item = self.plot_widget.getPlotItem()
+        # Favor responsiveness for dense profile traces.
+        plot_item.setClipToView(True)
+        plot_item.setDownsampling(auto=True, mode="peak")
 
         self._render_profile(
             distances=distances,
@@ -709,10 +720,16 @@ class LineProfileWindow(QtWidgets.QMainWindow):
 
     def _on_width_changed(self, value: float) -> None:
         """Handle integration width spinbox value changes."""
-        self.integration_width_px = value
-        if self._on_integration_width_changed is not None:
-            self._on_integration_width_changed(value)
-        logger.debug("Integration width changed to %.1f px", value)
+        self.integration_width_px = float(value)
+        self._pending_integration_width_px = float(value)
+        self._width_change_debounce_timer.start()
+        logger.debug("Integration width changed to %.1f px (debounced)", value)
+
+    def _emit_debounced_width_change(self) -> None:
+        """Emit integration-width callback after interaction settles."""
+        if self._on_integration_width_changed is None:
+            return
+        self._on_integration_width_changed(float(self._pending_integration_width_px))
 
     def _on_radial_length_value_changed(self, value: float) -> None:
         """Handle radial length updates for linked peak-collection profiles."""
